@@ -5,7 +5,7 @@ const { chromium } = require('playwright');
   const logs = [];
   page.on('console', msg => logs.push(`${msg.type()}: ${msg.text()}`));
   page.on('pageerror', err => logs.push(`PAGEERROR: ${err.message}`));
-  await page.goto('http://43.134.37.174:5173/onchain', { waitUntil: 'networkidle', timeout: 30000 });
+  await page.goto('http://YOUR_SERVER_IP:5173/onchain', { waitUntil: 'networkidle', timeout: 30000 });
   await page.waitForTimeout(3000);
   // Click Gas tab
   const gasTab = await page.locator('text=/Gas/i').first();

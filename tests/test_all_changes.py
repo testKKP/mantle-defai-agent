@@ -20,8 +20,8 @@ import requests
 from datetime import datetime
 from typing import Any, Dict, List, Tuple, Optional
 
-API_BASE = os.environ.get("API_BASE", "http://43.134.37.174:8000")
-FRONT_BASE = os.environ.get("FRONT_BASE", "http://43.134.37.174:5173")
+API_BASE = os.environ.get("API_BASE", "http://YOUR_SERVER_IP:8000")
+FRONT_BASE = os.environ.get("FRONT_BASE", "http://YOUR_SERVER_IP:5173")
 TIMEOUT_API = 30
 TIMEOUT_BATCH = 150
 SCREENSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")
@@ -152,7 +152,7 @@ def test_sentiment_backtest_enrichment():
     # Since whitelist blocks us from direct API, test via debug endpoint or check structure
     # Actually, let's check if the server is accessible with the correct origin
     # The server's own IP is in whitelist, so if we set X-Forwarded-For to the server IP:
-    headers = {"X-Forwarded-For": "43.134.37.174"}
+    headers = {"X-Forwarded-For": "YOUR_SERVER_IP"}
     resp, data, err = api_get("/api/sentiment/latest", headers=headers)
     if err:
         log_test("Whitelisted IP can access sentiment", False, err)

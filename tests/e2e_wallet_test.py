@@ -65,7 +65,7 @@ async def test_wallet_connection():
         await page.add_init_script(MOCK_PROVIDER_JS)
 
         print("[Test] Navigating to app...")
-        await page.goto("http://43.134.37.174:5173/")
+        await page.goto("http://YOUR_SERVER_IP:5173/")
         await page.wait_for_load_state("networkidle")
         await asyncio.sleep(2)
 
@@ -101,7 +101,7 @@ async def test_wallet_connection():
 
         # Navigate to routing page
         print("[Test] Navigating to Smart Routing...")
-        await page.goto("http://43.134.37.174:5173/routing")
+        await page.goto("http://YOUR_SERVER_IP:5173/routing")
         await page.wait_for_load_state("networkidle")
         await asyncio.sleep(2)
 

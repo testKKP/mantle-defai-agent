@@ -5,7 +5,7 @@ const { chromium } = require('playwright');
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const page = await context.newPage();
 
-  const BASE_URL = 'http://43.134.37.174:5173';
+  const BASE_URL = 'http://YOUR_SERVER_IP:5173';
   const results = [];
 
   // Helper to log and collect results

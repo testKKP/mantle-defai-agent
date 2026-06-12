@@ -3,7 +3,7 @@
 import asyncio
 from playwright.async_api import async_playwright
 
-URL = "http://43.134.37.174/sentiment"
+URL = "http://YOUR_SERVER_IP/sentiment"
 SCREENSHOT_PATH = "/root/.openclaw/workspace/projects/mantle-defai-trader/tests/screenshots/sentiment_verification.png"
 
 

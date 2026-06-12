@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
-const API_BASE = process.env.API_BASE || 'http://43.134.37.174:8000';
-const FRONTEND_BASE = process.env.FRONT_BASE || 'http://43.134.37.174:5173';
+const API_BASE = process.env.API_BASE || 'http://YOUR_SERVER_IP:8000';
+const FRONTEND_BASE = process.env.FRONT_BASE || 'http://YOUR_SERVER_IP:5173';
 
 test.describe('Backtest Module - Similar State Matching', () => {
 

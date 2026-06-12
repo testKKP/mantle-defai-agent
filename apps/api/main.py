@@ -184,7 +184,7 @@ os.makedirs(screenshots_dir, exist_ok=True)
 app.mount("/screenshots", StaticFiles(directory=screenshots_dir), name="screenshots")
 
 # CORS
-_allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "http://43.134.37.174:3000,http://43.134.37.174:5173,http://localhost:5173,http://localhost:3000")
+_allowed_origins_raw = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
 allowed_origins = [o.strip() for o in _allowed_origins_raw.split(",") if o.strip()] if _allowed_origins_raw else []
 app.add_middleware(
     CORSMiddleware,

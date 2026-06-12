@@ -321,7 +321,7 @@ def test_error_handling():
         log_test("Invalid timeframe returns 422", ok, detail)
 
     # 5.2 CORS preflight with allowed origin
-    allowed_origins = ["http://43.134.37.174:3000", "http://43.134.37.174:5173"]
+    allowed_origins = ["http://YOUR_SERVER_IP:3000", "http://YOUR_SERVER_IP:5173"]
     cors_ok = False
     cors_details = ""
     for origin in allowed_origins:

@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 
-API_BASE = "http://43.134.37.174:8000"
+API_BASE = "http://YOUR_SERVER_IP:8000"
 
 async def test_single_backtest():
     async with aiohttp.ClientSession() as session:

@@ -12,7 +12,7 @@ const { chromium } = require('playwright');
     }
   });
   
-  await page.goto('http://43.134.37.174:5173/sentiment');
+  await page.goto('http://YOUR_SERVER_IP:5173/sentiment');
   await page.waitForLoadState('networkidle');
   
   // Click backtest tab

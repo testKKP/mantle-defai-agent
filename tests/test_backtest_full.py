@@ -11,8 +11,8 @@ Usage:
     python3 tests/test_backtest_full.py
 
 Environment:
-    API_BASE    - Backend API base URL (default: http://43.134.37.174:8000)
-    FRONT_BASE  - Frontend base URL (default: http://43.134.37.174:5173)
+    API_BASE    - Backend API base URL (default: http://YOUR_SERVER_IP:8000)
+    FRONT_BASE  - Frontend base URL (default: http://YOUR_SERVER_IP:5173)
 """
 
 import os
@@ -27,8 +27,8 @@ from typing import Any, Dict, List, Tuple, Optional
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-API_BASE = os.environ.get("API_BASE", "http://43.134.37.174:8000")
-FRONT_BASE = os.environ.get("FRONT_BASE", "http://43.134.37.174:5173")
+API_BASE = os.environ.get("API_BASE", "http://YOUR_SERVER_IP:8000")
+FRONT_BASE = os.environ.get("FRONT_BASE", "http://YOUR_SERVER_IP:5173")
 TIMEOUT_API = 30
 TIMEOUT_BATCH = 150  # batch backtest can take > 2 minutes
 SCREENSHOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "screenshots")

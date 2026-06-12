@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  api:
+    build: ./apps/api
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - DEBUG=false
+      - CACHE_TTL=300
+      - RATE_LIMIT_REQUESTS=100
+      - RATE_LIMIT_WINDOW=60
+    volumes:
+      - ./apps/api/logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

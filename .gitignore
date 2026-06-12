@@ -1,0 +1,58 @@
+# Environment
+.env
+.env.*
+.env.local
+.env.deploy
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+
+# Logs
+*.log
+logs/
+
+# Database
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Node
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Foundry
+broadcast/
+cache/
+out/
+lib/
+
+# Screenshots / media
+tests/screenshots/
+apps/tests/screenshots/
+apps/web-react/public/screenshots/
+*.png
+*.mp4
+*.jpg
+*.jpeg
+*.gif
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

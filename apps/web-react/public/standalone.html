@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mantle DeFAI Trader — 波浪理论 · 情绪分析 · 回测验证</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0a0e17;
+      --card-bg: #111827;
+      --card-border: rgba(255,255,255,0.05);
+      --radius: 16px;
+      --brand-dark: #2D6B5E;
+      --brand-mid: #4A9B8C;
+      --brand-light: #7ED7C4;
+      --bullish: #10b981;
+      --bearish: #ef4444;
+      --neutral: #f59e0b;
+      --text: #e5e7eb;
+      --text-secondary: #6b7280;
+      --font: 'Inter', 'Noto Sans SC', -apple-system, sans-serif;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+    a { color: var(--brand-mid); text-decoration: none; }
+    a:hover { color: var(--brand-light); }
+
+    /* Header */
+    header {
+      border-bottom: 1px solid var(--card-border);
+      background: linear-gradient(180deg, rgba(45,107,94,0.08) 0%, transparent 100%);
+      padding: 32px 0 24px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+    .header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+    .brand h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      background: linear-gradient(135deg, var(--brand-light), var(--brand-mid));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .brand p {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+      margin-top: 4px;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--bearish);
+      transition: background 0.3s;
+    }
+    .status-dot.connected { background: var(--bullish); box-shadow: 0 0 8px var(--bullish); }
+    .status-dot.connecting { background: var(--neutral); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .btn {
+      background: linear-gradient(135deg, var(--brand-dark), var(--brand-mid));
+      border: none;
+      color: #fff;
+      padding: 8px 18px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 500;
+      transition: all 0.2s;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .btn:hover { filter: brightness(1.15); transform: translateY(-1px); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--card-border);
+      color: var(--text-secondary);
+    }
+    .btn-ghost:hover { border-color: var(--brand-mid); color: var(--brand-light); }
+
+    /* Section */
+    section { margin: 32px 0; }
+    .section-title {
+      font-size: 1.15rem;
+      font-weight: 600;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-title .icon {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--brand-dark), var(--brand-mid));
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.9rem;
+    }
+
+    /* Card */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius);
+      padding: 24px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .card:hover { border-color: rgba(45,107,94,0.3); }
+    .card-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* Grid */
+    .grid { display: grid; gap: 20px; }
+    .grid-2 { grid-template-columns: repeat(2, 1fr); }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+    @media (max-width: 1024px) {
+      .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 768px) {
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+      .brand h1 { font-size: 1.4rem; }
+      .header-row { flex-direction: column; align-items: flex-start; }
+    }
+
+    /* Big number */
+    .big-number {
+      font-size: 3rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .big-number.bullish { color: var(--bullish); }
+    .big-number.bearish { color: var(--bearish); }
+    .big-number.neutral { color: var(--neutral); }
+
+    /* Tags */
+    .tag {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 6px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .tag-bullish { background: rgba(16,185,129,0.12); color: var(--bullish); }
+    .tag-bearish { background: rgba(239,68,68,0.12); color: var(--bearish); }
+    .tag-neutral { background: rgba(245,158,11,0.12); color: var(--neutral); }
+    .tag-brand { background: rgba(45,107,94,0.15); color: var(--brand-light); }
+
+    /* Stat card */
+    .stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .stat-label {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+    th, td { padding: 12px 16px; text-align: left; }
+    th {
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      border-bottom: 1px solid var(--card-border);
+    }
+    td { border-bottom: 1px solid rgba(255,255,255,0.03); }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    tr.bullish-row { border-left: 3px solid var(--bullish); }
+    tr.bearish-row { border-left: 3px solid var(--bearish); }
+
+    /* Collapsible */
+    .collapsible-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: pointer;
+      padding: 16px 0;
+      border-bottom: 1px solid var(--card-border);
+    }
+    .collapsible-body {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height 0.4s ease;
+    }
+    .collapsible-body.open { max-height: 2000px; }
+    .chevron {
+      transition: transform 0.3s;
+      color: var(--text-secondary);
+    }
+    .chevron.open { transform: rotate(180deg); }
+
+    /* Selectors */
+    .selector-row {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .selector-row select {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      color: var(--text);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 0.875rem;
+      cursor: pointer;
+      outline: none;
+    }
+    .selector-row select:focus { border-color: var(--brand-mid); }
+
+    /* Chart image */
+    .chart-img {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--card-border);
+      margin-top: 12px;
+    }
+
+    /* Position report */
+    .position-col { display: flex; flex-direction: column; gap: 8px; }
+    .position-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px 14px;
+      background: rgba(255,255,255,0.02);
+      border-radius: 8px;
+      font-size: 0.875rem;
+    }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--card-border);
+      padding: 24px 0;
+      margin-top: 40px;
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+      text-align: center;
+    }
+
+    /* Loading skeleton */
+    .skeleton {
+      background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.07) 50%, rgba(255,255,255,0.03) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+      border-radius: 6px;
+    }
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+    .skeleton-text { height: 16px; margin-bottom: 8px; }
+    .skeleton-title { height: 24px; width: 60%; margin-bottom: 16px; }
+    .skeleton-circle { width: 64px; height: 64px; border-radius: 50%; }
+
+    /* Error / empty */
+    .error-box {
+      background: rgba(239,68,68,0.08);
+      border: 1px solid rgba(239,68,68,0.2);
+      color: #fca5a5;
+      padding: 16px 20px;
+      border-radius: 12px;
+      font-size: 0.875rem;
+    }
+    .empty-state {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+      padding: 24px;
+      text-align: center;
+    }
+
+    /* Tooltip-like hint */
+    .hint {
+      color: var(--text-secondary);
+      font-size: 0.8rem;
+      margin-top: 4px;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #374151; }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="container">
+      <div class="header-row">
+        <div class="brand">
+          <h1>Mantle DeFAI Trader</h1>
+          <p>波浪理论 · 情绪分析 · 回测验证</p>
+        </div>
+        <div class="header-actions">
+          <div class="status">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="statusText">连接中…</span>
+          </div>
+          <button class="btn" id="refreshBtn" onclick="refreshAll()">
+            <span>↻</span> 刷新
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- 1. 情绪概览仪表板 -->
+    <section id="sentimentSection">
+      <div class="section-title"><span class="icon">📊</span> 情绪概览仪表板</div>
+      <div id="sentimentLoading">
+        <div class="grid grid-4">
+          <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div></div>
+          <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div></div>
+          <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div></div>
+          <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text"></div></div>
+        </div>
+      </div>
+      <div id="sentimentContent" style="display:none">
+        <div class="grid grid-4">
+          <div class="card" style="text-align:center">
+            <div class="card-title">情绪指数</div>
+            <div class="big-number" id="sentimentIndex">—</div>
+            <div class="hint" id="sentimentHint">等待数据…</div>
+          </div>
+          <div class="card">
+            <div class="card-title">市场情绪</div>
+            <div style="display:flex;justify-content:space-around;text-align:center;margin-top:12px">
+              <div><div class="stat-value bullish" id="bullishCount">—</div><div class="stat-label">看涨</div></div>
+              <div><div class="stat-value bearish" id="bearishCount">—</div><div class="stat-label">看跌</div></div>
+              <div><div class="stat-value neutral" id="neutralCount">—</div><div class="stat-label">中性</div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">市场偏向 / 恐惧贪婪</div>
+            <div style="margin-top:8px">
+              <div style="margin-bottom:8px">偏向: <span id="marketBias" class="tag">—</span> <span id="biasStrength" class="tag">—</span></div>
+              <div>F&G: <span id="fngValue" class="tag">—</span> <span id="fngClass" class="tag">—</span></div>
+            </div>
+          </div>
+          <div class="card" style="text-align:center">
+            <div class="card-title">BTC 24h 变化</div>
+            <div class="big-number" id="btcChange">—</div>
+            <div class="hint">Bitcoin 24h</div>
+          </div>
+        </div>
+      </div>
+      <div id="sentimentError" class="error-box" style="display:none;margin-top:16px"></div>
+    </section>
+
+    <!-- 2. 波浪理论分析 -->
+    <section id="elliottSection">
+      <div class="section-title"><span class="icon">🌊</span> 波浪理论分析</div>
+      <div class="selector-row">
+        <select id="ewSymbol" onchange="refreshElliottWave()">
+          <option value="BTC">BTC</option>
+          <option value="ETH">ETH</option>
+          <option value="SOL">SOL</option>
+        </select>
+        <select id="ewTimeframe" onchange="refreshElliottWave()">
+          <option value="1h">1h</option>
+          <option value="4h">4h</option>
+          <option value="1d" selected>1d</option>
+        </select>
+      </div>
+      <div id="elliottLoading">
+        <div class="grid grid-2">
+          <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text" style="height:200px"></div></div>
+          <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text" style="height:200px"></div></div>
+        </div>
+      </div>
+      <div id="elliottContent" style="display:none">
+        <div class="grid grid-2">
+          <div class="card">
+            <div class="card-title">当前浪型</div>
+            <div id="waveInfo">
+              <div style="font-size:1.2rem;font-weight:600;margin-bottom:8px" id="wavePattern">—</div>
+              <div style="margin-bottom:8px">方向: <span id="waveDirection" class="tag">—</span></div>
+              <div style="margin-bottom:8px">当前浪: <span id="currentWave" class="tag tag-brand">—</span></div>
+              <div>置信度: <span id="waveScore" class="big-number" style="font-size:1.5rem">—</span></div>
+            </div>
+            <div id="waveChartWrap" style="margin-top:16px;display:none">
+              <img id="waveChart" class="chart-img" alt="波浪图表">
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">走势预测</div>
+            <div id="forecastCards" style="display:flex;flex-direction:column;gap:12px;margin-top:8px">
+              <!-- filled by JS -->
+            </div>
+            <div id="kimiAnalysisWrap" style="margin-top:16px;display:none">
+              <div class="card-title">Kimi AI 分析</div>
+              <div id="kimiAnalysis" style="font-size:0.85rem;color:var(--text-secondary);line-height:1.7;background:rgba(255,255,255,0.02);padding:12px;border-radius:8px"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="elliottError" class="error-box" style="display:none;margin-top:16px"></div>
+    </section>
+
+    <!-- 3. 回测数据展示 -->
+    <section id="backtestSection">
+      <div class="section-title"><span class="icon">📈</span> 回测数据展示</div>
+      <div id="backtestLoading">
+        <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text" style="height:120px"></div></div>
+      </div>
+      <div id="backtestContent" style="display:none">
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>币种</th><th>时间框架</th><th>信号总数</th><th>胜率</th><th>平均收益</th><th>盈亏比</th><th>当前信号</th><th>推荐动作</th><th>置信度</th>
+                </tr>
+              </thead>
+              <tbody id="backtestTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div id="backtestError" class="error-box" style="display:none;margin-top:16px"></div>
+    </section>
+
+    <!-- 4. 回测历史记录 -->
+    <section id="historySection">
+      <div class="section-title"><span class="icon">📜</span> 回测历史记录</div>
+      <div id="historyLoading">
+        <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text" style="height:80px"></div></div>
+      </div>
+      <div id="historyContent" style="display:none">
+        <div id="historyGroups"></div>
+      </div>
+      <div id="historyError" class="error-box" style="display:none;margin-top:16px"></div>
+    </section>
+
+    <!-- 5. 全币种情绪评分 -->
+    <section id="scoresSection">
+      <div class="section-title"><span class="icon">⭐</span> 全币种情绪评分</div>
+      <div id="scoresLoading">
+        <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text" style="height:120px"></div></div>
+      </div>
+      <div id="scoresContent" style="display:none">
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>币种</th><th>价格</th><th>24h变化</th><th>趋势</th><th>信号强度</th><th>评分</th><th>成交量</th>
+                </tr>
+              </thead>
+              <tbody id="scoresTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div id="scoresError" class="error-box" style="display:none;margin-top:16px"></div>
+    </section>
+
+    <!-- 6. 持仓建议报告 -->
+    <section id="positionSection">
+      <div class="section-title"><span class="icon">💼</span> 持仓建议报告</div>
+      <div id="positionLoading">
+        <div class="grid grid-3">
+          <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text" style="height:80px"></div></div>
+          <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text" style="height:80px"></div></div>
+          <div class="card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-text" style="height:80px"></div></div>
+        </div>
+      </div>
+      <div id="positionContent" style="display:none">
+        <div class="grid grid-3" id="positionGrid"></div>
+      </div>
+      <div id="positionError" class="error-box" style="display:none;margin-top:16px"></div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="container">
+      <div>数据更新时间: <span id="updateTime">—</span></div>
+      <div style="margin-top:4px">数据来源: Mantle DeFAI Trader 后端 API · 自动刷新间隔 60s</div>
+    </div>
+  </footer>
+
+
+  <script>
+  // ========== Utilities ==========
+  const $ = (id) => document.getElementById(id);
+  const fmt = {
+    price: (v) => v == null ? '—' : (+v).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:8}),
+    pct: (v) => v == null ? '—' : ((+v) > 0 ? '+' : '') + (+v).toFixed(2) + '%',
+    num: (v) => v == null ? '—' : (+v).toLocaleString('en-US'),
+    kmb: (v) => {
+      if (v == null) return '—';
+      const n = +v;
+      if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
+      if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+      if (n >= 1e3) return (n/1e3).toFixed(2) + 'K';
+      return n.toFixed(2);
+    },
+    time: (iso) => {
+      if (!iso) return '—';
+      try { return new Date(iso).toLocaleString('zh-CN'); } catch { return iso; }
+    }
+  };
+
+  function setStatus(state, text) {
+    const dot = $('statusDot');
+    const txt = $('statusText');
+    dot.className = 'status-dot';
+    if (state === 'connected') dot.classList.add('connected');
+    else if (state === 'connecting') dot.classList.add('connecting');
+    txt.textContent = text;
+  }
+
+  function showError(sectionId, msg) {
+    const el = $(sectionId + 'Error');
+    if (el) { el.textContent = msg; el.style.display = 'block'; }
+  }
+  function hideError(sectionId) {
+    const el = $(sectionId + 'Error');
+    if (el) el.style.display = 'none';
+  }
+  function showLoading(sectionId) { $(sectionId + 'Loading').style.display = 'block'; $(sectionId + 'Content').style.display = 'none'; }
+  function hideLoading(sectionId) { $(sectionId + 'Loading').style.display = 'none'; $(sectionId + 'Content').style.display = 'block'; }
+
+  // ========== API ==========
+  const API_BASE = (() => {
+    const port = window.location.port;
+    // 非标准端口（如 serve 5173）直接连后端 8000
+    if (port && port !== '80' && port !== '443') {
+      return `http://${window.location.hostname}:8000`;
+    }
+    return '';
+  })();
+
+  async function api(url) {
+    const fullUrl = url.startsWith('http') ? url : API_BASE + url;
+    const res = await fetch(fullUrl, { headers: { 'Accept': 'application/json' } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  let latestData = null;
+
+  // ========== 1. Sentiment ==========
+  async function loadSentiment() {
+    showLoading('sentiment'); hideError('sentiment');
+    try {
+      const data = await api('/api/sentiment/latest');
+      latestData = data;
+      const d = data.data || data;
+      const idx = d.sentiment_index;
+      const indexEl = $('sentimentIndex');
+      indexEl.textContent = idx != null ? idx.toFixed(1) : '—';
+      indexEl.className = 'big-number ' + (idx == null ? '' : idx < 30 ? 'bearish' : idx > 70 ? 'bullish' : 'neutral');
+      $('sentimentHint').textContent = idx == null ? '' : idx < 30 ? '市场恐慌 — 可能超卖' : idx > 70 ? '市场贪婪 — 可能超买' : '情绪中性';
+
+      $('bullishCount').textContent = fmt.num(d.bullish_count);
+      $('bearishCount').textContent = fmt.num(d.bearish_count);
+      $('neutralCount').textContent = fmt.num(d.neutral_count);
+
+      const bias = d.market_bias || '—';
+      $('marketBias').textContent = bias;
+      $('marketBias').className = 'tag tag-' + (bias === 'bullish' ? 'bullish' : bias === 'bearish' ? 'bearish' : 'neutral');
+      $('biasStrength').textContent = d.bias_strength || '—';
+
+      const fng = d.fng || {};
+      $('fngValue').textContent = fng.value != null ? fng.value : '—';
+      $('fngClass').textContent = fng.classification || '—';
+
+      const btc = d.btc_change_24h;
+      const btcEl = $('btcChange');
+      btcEl.textContent = btc != null ? fmt.pct(btc) : '—';
+      btcEl.className = 'big-number ' + (btc == null ? '' : btc > 0 ? 'bullish' : btc < 0 ? 'bearish' : 'neutral');
+
+      hideLoading('sentiment');
+      setStatus('connected', '已连接');
+      $('updateTime').textContent = new Date().toLocaleString('zh-CN');
+
+      // dependent sections
+      renderBacktest(d.backtest_results);
+      renderHistory(d.backtest_results);
+      renderScores(d.symbol_scores);
+      renderPositions(d.position_report);
+    } catch (e) {
+      showError('sentiment', '情绪数据加载失败: ' + e.message);
+      hideLoading('sentiment');
+      setStatus('error', '连接失败');
+    }
+  }
+
+  // ========== 2. Elliott Wave ==========
+  async function loadElliottWave() {
+    showLoading('elliott'); hideError('elliott');
+    const sym = $('ewSymbol').value;
+    const tf = $('ewTimeframe').value;
+    try {
+      const res = await api(`/api/sentiment/elliott-wave?symbol=${sym}&timeframe=${tf}`);
+      const d = res.data || res;
+      const cands = d.candidates || [];
+      const best = cands[0] || {};
+
+      $('wavePattern').textContent = best.wave_pattern || '无数据';
+      const dir = best.direction || '—';
+      $('waveDirection').textContent = dir;
+      $('waveDirection').className = 'tag tag-' + (dir === 'bullish' ? 'bullish' : dir === 'bearish' ? 'bearish' : 'neutral');
+      $('currentWave').textContent = best.current_wave || '—';
+      $('waveScore').textContent = best.score != null ? (best.score * 100).toFixed(1) + '%' : '—';
+
+      const paths = d.chart_paths || [];
+      const chartWrap = $('waveChartWrap');
+      if (paths.length > 0) {
+        const chartUrl = paths[0].startsWith('http') ? paths[0] : (API_BASE || '') + paths[0];
+        $('waveChart').src = chartUrl;
+        chartWrap.style.display = 'block';
+      } else {
+        chartWrap.style.display = 'none';
+      }
+
+      // forecast cards — API returns 'projections' array
+      const projections = best.projections || [];
+      const fcWrap = $('forecastCards');
+      fcWrap.innerHTML = '';
+      const scenarioMap = {
+        'bullish': { label: '看涨 (Extension)', cls: 'tag-bullish' },
+        'bearish': { label: '看跌 (Correction)', cls: 'tag-bearish' },
+        'neutral': { label: '中性 (Consolidation)', cls: 'tag-neutral' },
+      };
+      projections.forEach(p => {
+        const s = scenarioMap[p.scenario] || { label: p.scenario || '未知', cls: 'tag-neutral' };
+        const item = p;
+        const el = document.createElement('div');
+        el.style.cssText = 'background:rgba(255,255,255,0.02);padding:12px 14px;border-radius:10px;font-size:0.875rem';
+        el.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span class="tag ${s.cls}">${s.label}</span>
+          <span style="font-weight:600">${item.target_price != null ? fmt.price(item.target_price) : '—'}</span>
+        </div>
+        <div style="color:var(--text-secondary);font-size:0.8rem">置信度: ${item.confidence != null ? (item.confidence*100).toFixed(1)+'%' : '—'}</div>`;
+        fcWrap.appendChild(el);
+      });
+
+      // kimi analysis
+      const kimiWrap = $('kimiAnalysisWrap');
+      if (d.kimi_analysis) {
+        let kimiText = '';
+        if (typeof d.kimi_analysis === 'string') {
+          kimiText = d.kimi_analysis;
+        } else if (d.kimi_analysis.kimi_structure) {
+          const ks = d.kimi_analysis.kimi_structure;
+          kimiText = `AI 浪型识别: ${ks.wave_pattern || '—'} | 方向: ${ks.direction || '—'} | 当前浪: ${ks.current_wave || '—'}`;
+        } else {
+          kimiText = JSON.stringify(d.kimi_analysis, null, 2);
+        }
+        $('kimiAnalysis').textContent = kimiText;
+        kimiWrap.style.display = 'block';
+      } else {
+        kimiWrap.style.display = 'none';
+      }
+
+      hideLoading('elliott');
+    } catch (e) {
+      showError('elliott', '波浪理论数据加载失败: ' + e.message);
+      hideLoading('elliott');
+    }
+  }
+  function refreshElliottWave() { loadElliottWave(); }
+
+  // ========== 3. Backtest Table ==========
+  function renderBacktest(bt) {
+    showLoading('backtest'); hideError('backtest');
+    const tbody = $('backtestTableBody');
+    tbody.innerHTML = '';
+    if (!bt || Object.keys(bt).length === 0) {
+      tbody.innerHTML = '<tr><td colspan="9" class="empty-state">暂无回测数据</td></tr>';
+      hideLoading('backtest'); return;
+    }
+    Object.entries(bt).forEach(([key, item]) => {
+      const [symbol, timeframe] = key.split('_');
+      const tr = document.createElement('tr');
+      const curSig = item.current_signal || {};
+      const rec = curSig.recommendation || {};
+      const action = rec.action || curSig.action || curSig.signal || '—';
+      const conf = curSig.confidence || rec.confidence || '—';
+      const isLong = /long|buy/i.test(action);
+      const isShort = /short|sell/i.test(action);
+      const isHighlight = isLong || isShort;
+      if (isHighlight) tr.style.background = 'rgba(45,107,94,0.06)';
+      tr.innerHTML = `
+        <td><strong>${symbol}</strong></td>
+        <td>${timeframe || '—'}</td>
+        <td>${fmt.num(item.total_signals)}</td>
+        <td>${item.win_rate != null ? (+item.win_rate).toFixed(1)+'%' : '—'}</td>
+        <td class="${item.avg_pnl > 0 ? 'bullish' : item.avg_pnl < 0 ? 'bearish' : ''}">${fmt.pct(item.avg_pnl)}</td>
+        <td>${item.profit_factor != null ? (+item.profit_factor).toFixed(2) : '—'}</td>
+        <td><span class="tag tag-${isLong ? 'bullish' : isShort ? 'bearish' : 'neutral'}">${action}</span></td>
+        <td>${rec.reason || rec.action || action}</td>
+        <td>${conf}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    hideLoading('backtest');
+  }
+
+  // ========== 4. History ==========
+  function renderHistory(bt) {
+    showLoading('history'); hideError('history');
+    const wrap = $('historyGroups');
+    wrap.innerHTML = '';
+    if (!bt || Object.keys(bt).length === 0) {
+      wrap.innerHTML = '<div class="empty-state">暂无历史记录</div>';
+      hideLoading('history'); return;
+    }
+    let hasAny = false;
+    Object.entries(bt).forEach(([key, item]) => {
+      const signals = item.recent_signals || [];
+      if (!signals.length) return;
+      hasAny = true;
+      const [symbol, timeframe] = key.split('_');
+      const group = document.createElement('div');
+      group.className = 'card';
+      group.style.marginBottom = '16px';
+      group.innerHTML = `
+        <div class="collapsible-header" onclick="toggleHistory(this)">
+          <div><strong>${symbol}</strong> <span style="color:var(--text-secondary);font-size:0.8rem">${timeframe}</span> <span class="tag tag-brand">${signals.length} 条</span></div>
+          <span class="chevron">▼</span>
+        </div>
+        <div class="collapsible-body">
+          <div class="table-wrap" style="padding:8px 0">
+            <table>
+              <thead><tr><th>时间</th><th>方向</th><th>形态</th><th>持仓期</th><th>入场价</th><th>出场价</th><th>盈亏%</th><th>净盈亏%</th></tr></thead>
+              <tbody>${signals.map(s => {
+                const pnl = s.pnl_pct != null ? +s.pnl_pct : null;
+                const net = s.net_pnl_pct != null ? +s.net_pnl_pct : (s.pnl != null ? +s.pnl : null);
+                return `<tr>
+                  <td>${fmt.time(s.timestamp || s.entry_time)}</td>
+                  <td><span class="tag tag-${(s.direction||'').toLowerCase()==='long'?'bullish':'bearish'}">${s.direction || '—'}</span></td>
+                  <td>${s.pattern || '—'}</td>
+                  <td>${s.hold_period != null ? s.hold_period + 'd' : '—'}</td>
+                  <td>${fmt.price(s.entry_price)}</td>
+                  <td>${fmt.price(s.exit_price)}</td>
+                  <td class="${pnl > 0 ? 'bullish' : pnl < 0 ? 'bearish' : ''}">${fmt.pct(pnl)}</td>
+                  <td class="${net > 0 ? 'bullish' : net < 0 ? 'bearish' : ''}">${fmt.pct(net)}</td>
+                </tr>`;
+              }).join('')}</tbody>
+            </table>
+          </div>
+        </div>
+      `;
+      wrap.appendChild(group);
+    });
+    if (!hasAny) wrap.innerHTML = '<div class="empty-state">暂无历史记录</div>';
+    hideLoading('history');
+  }
+  function toggleHistory(el) {
+    const body = el.nextElementSibling;
+    const chevron = el.querySelector('.chevron');
+    body.classList.toggle('open');
+    chevron.classList.toggle('open');
+  }
+
+  // ========== 5. Symbol Scores ==========
+  function renderScores(scores) {
+    showLoading('scores'); hideError('scores');
+    const tbody = $('scoresTableBody');
+    tbody.innerHTML = '';
+    if (!scores || !scores.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">暂无评分数据</td></tr>';
+      hideLoading('scores'); return;
+    }
+    const arr = [...scores].sort((a,b) => (b.score || 0) - (a.score || 0));
+    arr.forEach(s => {
+      const tr = document.createElement('tr');
+      const align = (s.alignment || '').toLowerCase();
+      tr.className = align === 'bullish' ? 'bullish-row' : align === 'bearish' ? 'bearish-row' : '';
+      const change = s.price_change_24h != null ? s.price_change_24h : s.change_24h;
+      const vol = s.volume != null ? s.volume : s.volume_24h;
+      tr.innerHTML = `
+        <td><strong>${s.symbol || s.token || '—'}</strong></td>
+        <td>${fmt.price(s.price)}</td>
+        <td class="${change > 0 ? 'bullish' : change < 0 ? 'bearish' : ''}">${fmt.pct(change)}</td>
+        <td><span class="tag tag-${align === 'bullish' ? 'bullish' : align === 'bearish' ? 'bearish' : 'neutral'}">${s.alignment || '—'}</span></td>
+        <td><span class="tag tag-${align === 'bullish' ? 'bullish' : align === 'bearish' ? 'bearish' : 'neutral'}">${s.strength || '—'}</span></td>
+        <td><strong>${s.score != null ? s.score.toFixed(1) : '—'}</strong></td>
+        <td>${fmt.kmb(vol)}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+    hideLoading('scores');
+  }
+
+  // ========== 6. Position Report ==========
+  function renderPositions(report) {
+    showLoading('position'); hideError('position');
+    const grid = $('positionGrid');
+    grid.innerHTML = '';
+    if (!report) {
+      grid.innerHTML = '<div class="card empty-state" style="grid-column:1/-1">暂无持仓建议</div>';
+      hideLoading('position'); return;
+    }
+    const frames = [
+      { key: '1d', label: '1天 (1d)' },
+      { key: '4h', label: '4小时 (4h)' },
+      { key: '1w', label: '1周 (1w)' },
+    ];
+    frames.forEach(f => {
+      const data = report[f.key] || {};
+      const card = document.createElement('div');
+      card.className = 'card';
+      const longs = data.long || data.longs || [];
+      const shorts = data.short || data.shorts || [];
+      const watches = data.watch || data.watches || [];
+      card.innerHTML = `
+        <div class="card-title">${f.label}</div>
+        <div class="position-col">
+          ${longs.length ? `<div style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:4px">做多 (Long)</div>` + longs.map(t => `<div class="position-item"><span>${t.symbol || t}</span><span class="tag tag-bullish">LONG</span></div>`).join('') : ''}
+          ${shorts.length ? `<div style="font-size:0.75rem;color:var(--text-secondary);margin:8px 0 4px">做空 (Short)</div>` + shorts.map(t => `<div class="position-item"><span>${t.symbol || t}</span><span class="tag tag-bearish">SHORT</span></div>`).join('') : ''}
+          ${watches.length ? `<div style="font-size:0.75rem;color:var(--text-secondary);margin:8px 0 4px">观察 (Watch)</div>` + watches.map(t => `<div class="position-item"><span>${t.symbol || t}</span><span class="tag tag-neutral">WATCH</span></div>`).join('') : ''}
+          ${!longs.length && !shorts.length && !watches.length ? '<div class="empty-state" style="padding:12px">暂无建议</div>' : ''}
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+    hideLoading('position');
+  }
+
+  // ========== Orchestration ==========
+  async function refreshAll() {
+    setStatus('connecting', '刷新中…');
+    $('refreshBtn').disabled = true;
+    await Promise.all([
+      loadSentiment(),
+      loadElliottWave()
+    ]);
+    $('refreshBtn').disabled = false;
+  }
+
+  let autoRefresh;
+  function startAutoRefresh() {
+    if (autoRefresh) clearInterval(autoRefresh);
+    autoRefresh = setInterval(refreshAll, 60000);
+  }
+
+  // Init
+  document.addEventListener('DOMContentLoaded', () => {
+    setStatus('connecting', '连接中…');
+    refreshAll();
+    startAutoRefresh();
+  });
+  </script>
+</body>
+</html>

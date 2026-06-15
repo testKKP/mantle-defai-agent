@@ -3,6 +3,7 @@ All API endpoints registered via FastAPI APIRouter.
 """
 
 import asyncio
+import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 from loguru import logger
@@ -128,7 +129,7 @@ async def analyze_sentiment(request: Request, req: SentimentRequest):
         result = await _enrich_with_backtest(result, req.timeframe.value)
         # Persist FULL data to database for fast retrieval
         try:
-            await db_set("sentiment", result, ttl_seconds=3960)
+            await db_set("sentiment", result, ttl_seconds=15000)
         except Exception as db_err:
             logger.warning(f"Failed to persist sentiment to DB: {db_err}")
         # Position report (long/short) is now visible to all users
@@ -139,11 +140,109 @@ async def analyze_sentiment(request: Request, req: SentimentRequest):
         logger.error(f"Sentiment analysis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+def _trim_backtest_results_for_api(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Trim verbose backtest_result fields to reduce /api/sentiment/latest payload size.
+
+    Keeps only the fields the frontend actually needs and limits recent_signals to the
+    latest 3 entries.  Does not mutate cached/DB source data.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    result = dict(data)
+    backtest_results = result.get("backtest_results")
+    if not backtest_results:
+        return result
+
+    stats_keep = {
+        "total_signals",
+        "win_rate",
+        "avg_pnl",
+        "avg_net_pnl",
+        "profit_factor",
+        "max_pnl",
+        "min_pnl",
+        "insufficient_data",
+    }
+
+    def _trim_stats(stats: Any) -> Any:
+        if not isinstance(stats, dict):
+            return stats
+        # stats may be a flat dict or a nested dict of bucket -> stats.
+        trimmed_stats: Dict[str, Any] = {}
+        for key, value in stats.items():
+            if isinstance(value, dict):
+                trimmed_stats[key] = {k: v for k, v in value.items() if k in stats_keep}
+            elif key in stats_keep:
+                trimmed_stats[key] = value
+        return trimmed_stats
+
+    current_signal_keep = {
+        "symbol",
+        "timeframe",
+        "direction",
+        "pattern",
+        "duration",
+        "strength",
+        "current_price",
+        "recommendation",
+        "similar_state_stats",
+    }
+
+    recent_signal_keep = {
+        "symbol",
+        "timeframe",
+        "direction",
+        "pattern",
+        "duration",
+        "entry_price",
+        "exit_price",
+        "pnl_pct",
+        "pnl",
+        "exit_at",
+        "strength",
+        "confidence",
+        "ma_alignment",
+    }
+
+    def _trim_entry(entry: Any) -> Any:
+        if not isinstance(entry, dict):
+            return entry
+
+        trimmed: Dict[str, Any] = {k: v for k, v in entry.items() if k in {"symbol", "timeframe", "total_signals"}}
+
+        if "stats" in entry:
+            trimmed["stats"] = _trim_stats(entry["stats"])
+
+        if "current_signal" in entry and isinstance(entry["current_signal"], dict):
+            cs = entry["current_signal"]
+            trimmed["current_signal"] = {k: v for k, v in cs.items() if k in current_signal_keep}
+            if "similar_state_stats" in cs:
+                trimmed["current_signal"]["similar_state_stats"] = _trim_stats(cs["similar_state_stats"])
+
+        if "recent_signals" in entry and isinstance(entry["recent_signals"], list):
+            recent = entry["recent_signals"][-3:] if len(entry["recent_signals"]) > 3 else entry["recent_signals"]
+            trimmed["recent_signals"] = [
+                {k: v for k, v in sig.items() if k in recent_signal_keep}
+                for sig in recent
+                if isinstance(sig, dict)
+            ]
+
+        return trimmed
+
+    if isinstance(backtest_results, dict):
+        result["backtest_results"] = {k: _trim_entry(v) for k, v in backtest_results.items()}
+    elif isinstance(backtest_results, list):
+        result["backtest_results"] = [_trim_entry(v) for v in backtest_results]
+
+    return result
+
+
 @api_router.get("/api/sentiment/latest", tags=["Sentiment"], summary="Get Latest Sentiment", description="Get cached sentiment data from database. Background tasks refresh every hour with full enrichment.")
 @rate_limit()
 async def get_latest_sentiment(request: Request, wallet_address: Optional[str] = None):
     try:
-        # 1. Try database first (background tasks refresh every hour with enrichment)
+        # 1. Try database first (background tasks refresh every 4 hours with enrichment)
         db_data = await db_get("sentiment")
         if db_data is not None:
             result = sanitize_for_json(db_data)
@@ -152,9 +251,10 @@ async def get_latest_sentiment(request: Request, wallet_address: Optional[str] =
                 try:
                     result = await _enrich_with_backtest(result, "1d")
                     # 将 enrichment 结果保存回缓存
-                    await db_set("sentiment", result, ttl_seconds=3960)
+                    await db_set("sentiment", result, ttl_seconds=15000)
                 except Exception as enrich_err:
                     logger.warning(f"Backtest enrichment failed in get_latest_sentiment: {enrich_err}")
+            result = _trim_backtest_results_for_api(result)
             has_backtest = bool(result.get("backtest_results"))
             return {
                 "success": True,
@@ -168,6 +268,7 @@ async def get_latest_sentiment(request: Request, wallet_address: Optional[str] =
         cached = await cache.get("sentiment", "1h", 50)
         if cached:
             result = sanitize_for_json(cached)
+            result = _trim_backtest_results_for_api(result)
             has_backtest = bool(result.get("backtest_results"))
             return {
                 "success": True,
@@ -199,7 +300,7 @@ async def analyze_elliott_wave(request: Request, body: dict = Body(...)):
         body = body or {}
         symbol = body.get("symbol", "BTC").upper()
         timeframe = body.get("timeframe", "1d")
-        limit = min(max(body.get("limit", 500), 50), 1000)
+        limit = min(max(body.get("limit", 200), 50), 1000)
         include_kimi = body.get("include_kimi", True)
         force_refresh = body.get("force_refresh", False)
 
@@ -222,7 +323,7 @@ async def analyze_elliott_wave(request: Request, body: dict = Body(...)):
 
         # 2. 艾略特波浪分析
         from elliott_wave import ElliottWaveAnalyzer
-        ew_analyzer = ElliottWaveAnalyzer(deviation=0.10, min_span_ratio=0.15)
+        ew_analyzer = ElliottWaveAnalyzer(deviation=0.10, min_span_ratio=0.10)
         candidates = ew_analyzer.analyze(klines, top_n=3)
 
         # 预定义截图目录
@@ -248,7 +349,6 @@ async def analyze_elliott_wave(request: Request, body: dict = Body(...)):
                     chart_paths=chart_paths,
                     klines_count=len(klines),
                     kimi_analysis=None,
-                    ttl=86400,
                 )
             except Exception as cache_err:
                 logger.warning(f"Failed to save Elliott Wave cache: {cache_err}")
@@ -272,15 +372,10 @@ async def analyze_elliott_wave(request: Request, body: dict = Body(...)):
         if candidates:
             candidate = candidates[0]
 
-            # 1. 先生成纯K线图（传给Kimi用）
-            raw_chart_filename = f"ew_{symbol}_{timeframe}_{timestamp}_raw.png"
-            raw_chart_path = os.path.join(screenshots_dir, raw_chart_filename)
-            plot_raw_candlestick(klines, symbol, timeframe, raw_chart_path)
-
             # 生成走势预测数据（基于波浪结构直接计算，不依赖AI）
             projections = _build_projections(candidate, klines)
 
-            # 2. 生成统一图表（包含K线+波浪标注+走势预测+信息面板）
+            # 1. 生成统一图表（包含K线+波浪标注+走势预测+信息面板）
             chart_filename = f"ew_{symbol}_{timeframe}_{timestamp}.png"
             chart_path = os.path.join(screenshots_dir, chart_filename)
             plot_elliott_wave_unified(klines, candidate, projections, symbol, timeframe, chart_path)
@@ -291,24 +386,45 @@ async def analyze_elliott_wave(request: Request, body: dict = Body(...)):
                 candidate["projections"] = projections
                 candidate["projection_chart_path"] = f"/screenshots/{chart_filename}"  # 向后兼容，指向统一图
 
-            # 3. 调用Kimi Vision（传纯K线图）
+            # 2. 调用Kimi分析（BTC/ETH走视觉模式，其他走快速文本模式）
             kimi_annotated = False
             if include_kimi:
                 try:
-                    from kimi_vision import analyze_elliott_wave_with_kimi
-                    kimi_result = await asyncio.wait_for(
-                        analyze_elliott_wave_with_kimi(
-                            chart_path=raw_chart_path,  # 传纯K线图！
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            wave_candidate=candidate,
-                        ),
-                        timeout=90,
-                    )
-                    candidate["kimi_analysis"] = kimi_result
+                    from kimi_vision import analyze_elliott_wave_with_kimi, analyze_elliott_wave_text_only
+                    kimi_result = None
+                    kimi_structure = None
+                    raw_chart_path = None
 
-                    # 4. 如果Kimi返回有效浪型结构，用Kimi的重新画图
-                    kimi_structure = kimi_result.get("kimi_structure")
+                    if symbol in ("BTC", "ETH"):
+                        # Visual mode for top-tier assets: generate raw chart first
+                        raw_chart_filename = f"ew_{symbol}_{timeframe}_{timestamp}_raw.png"
+                        raw_chart_path = os.path.join(screenshots_dir, raw_chart_filename)
+                        plot_raw_candlestick(klines, symbol, timeframe, raw_chart_path, pivots=candidate.get("zigzag_pivots"))
+
+                        kimi_result = await asyncio.wait_for(
+                            analyze_elliott_wave_with_kimi(
+                                chart_path=raw_chart_path,
+                                symbol=symbol,
+                                timeframe=timeframe,
+                                wave_candidate=candidate,
+                            ),
+                            timeout=360,
+                        )
+                    else:
+                        # Text-only fast mode for altcoins
+                        kimi_result = await asyncio.wait_for(
+                            analyze_elliott_wave_text_only(
+                                candidate=candidate,
+                                symbol=symbol,
+                                timeframe=timeframe,
+                            ),
+                            timeout=120,
+                        )
+
+                    candidate["kimi_analysis"] = kimi_result
+                    kimi_structure = kimi_result.get("kimi_structure") if kimi_result else None
+
+                    # 3. 如果Kimi返回有效浪型结构，用Kimi的重新画图
                     if kimi_structure and "waves" in kimi_structure:
                         from chart_generator import plot_kimi_annotated_wave
                         kimi_chart_filename = f"ew_{symbol}_{timeframe}_{timestamp}_kimi.png"
@@ -327,13 +443,27 @@ async def analyze_elliott_wave(request: Request, body: dict = Body(...)):
                             candidate["direction"] = kimi_structure.get("direction", candidate.get("direction"))
                             candidate["current_wave"] = kimi_structure.get("current_wave", "")
                         kimi_annotated = True
+
+                    # 附加完整 Kimi 分析并重新生成带支撑阻力的统一图
+                    if kimi_result:
+                        try:
+                            plot_elliott_wave_unified(
+                                klines,
+                                candidate,
+                                candidate.get("projections", projections),
+                                symbol,
+                                timeframe,
+                                chart_path,
+                            )
+                        except Exception as plot_err:
+                            logger.warning(f"Failed to regenerate unified chart with Kimi SR: {plot_err}")
                 except asyncio.TimeoutError:
-                    logger.warning("Kimi Vision analysis timed out after 90s, using algorithm result")
+                    logger.warning("Kimi Vision analysis timed out after 360s, using algorithm result")
                     candidate["kimi_analysis"] = {"error": "timeout"}
                 except ImportError:
                     logger.warning("kimi_vision module not available, skipping Kimi analysis")
                 except Exception as kimi_err:
-                    logger.warning(f"Kimi Vision analysis failed: {kimi_err}")
+                    logger.warning(f"Kimi analysis failed: {kimi_err}")
                     candidate["kimi_analysis"] = {"error": str(kimi_err)}
 
             if not kimi_annotated:
@@ -349,7 +479,6 @@ async def analyze_elliott_wave(request: Request, body: dict = Body(...)):
                 chart_paths=chart_paths,
                 klines_count=len(klines),
                 kimi_analysis=kimi_analysis_dict,
-                ttl=86400,
             )
         except Exception as cache_err:
             logger.warning(f"Failed to save Elliott Wave cache: {cache_err}")
@@ -421,7 +550,7 @@ async def refresh_elliott_wave(request: Request, body: dict = Body(...)):
         body = body or {}
         symbol = body.get("symbol", "BTC").upper()
         timeframe = body.get("timeframe", "1d")
-        limit = min(max(body.get("limit", 500), 50), 1000)
+        limit = min(max(body.get("limit", 200), 50), 1000)
         include_kimi = body.get("include_kimi", True)
 
         # 1. 获取 K 线数据
@@ -435,7 +564,7 @@ async def refresh_elliott_wave(request: Request, body: dict = Body(...)):
 
         # 2. 艾略特波浪分析
         from elliott_wave import ElliottWaveAnalyzer
-        ew_analyzer = ElliottWaveAnalyzer(deviation=0.10, min_span_ratio=0.15)
+        ew_analyzer = ElliottWaveAnalyzer(deviation=0.10, min_span_ratio=0.10)
         candidates = ew_analyzer.analyze(klines, top_n=3)
 
         # 预定义截图目录
@@ -460,7 +589,6 @@ async def refresh_elliott_wave(request: Request, body: dict = Body(...)):
                 chart_paths=chart_paths,
                 klines_count=len(klines),
                 kimi_analysis=None,
-                ttl=86400,
             )
             return {"success": True, "data": {"symbol": symbol, "timeframe": timeframe, "klines_count": len(klines), "candidates": [], "chart_paths": chart_paths, "message": "No Elliott Wave patterns found in current data"}}
 
@@ -482,15 +610,10 @@ async def refresh_elliott_wave(request: Request, body: dict = Body(...)):
         if candidates:
             candidate = candidates[0]
 
-            # 1. 先生成纯K线图（传给Kimi用）
-            raw_chart_filename = f"ew_{symbol}_{timeframe}_{timestamp}_raw.png"
-            raw_chart_path = os.path.join(screenshots_dir, raw_chart_filename)
-            plot_raw_candlestick(klines, symbol, timeframe, raw_chart_path)
-
             # 生成走势预测数据（基于波浪结构直接计算，不依赖AI）
             projections = _build_projections(candidate, klines)
 
-            # 2. 生成统一图表（包含K线+波浪标注+走势预测+信息面板）
+            # 1. 生成统一图表（包含K线+波浪标注+走势预测+信息面板）
             chart_filename = f"ew_{symbol}_{timeframe}_{timestamp}.png"
             chart_path = os.path.join(screenshots_dir, chart_filename)
             plot_elliott_wave_unified(klines, candidate, projections, symbol, timeframe, chart_path)
@@ -501,24 +624,45 @@ async def refresh_elliott_wave(request: Request, body: dict = Body(...)):
                 candidate["projections"] = projections
                 candidate["projection_chart_path"] = f"/screenshots/{chart_filename}"  # 向后兼容，指向统一图
 
-            # 3. 调用Kimi Vision（传纯K线图）
+            # 2. 调用Kimi分析（BTC/ETH走视觉模式，其他走快速文本模式）
             kimi_annotated = False
             if include_kimi:
                 try:
-                    from kimi_vision import analyze_elliott_wave_with_kimi
-                    kimi_result = await asyncio.wait_for(
-                        analyze_elliott_wave_with_kimi(
-                            chart_path=raw_chart_path,  # 传纯K线图！
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            wave_candidate=candidate,
-                        ),
-                        timeout=90,
-                    )
-                    candidate["kimi_analysis"] = kimi_result
+                    from kimi_vision import analyze_elliott_wave_with_kimi, analyze_elliott_wave_text_only
+                    kimi_result = None
+                    kimi_structure = None
+                    raw_chart_path = None
 
-                    # 4. 如果Kimi返回有效浪型结构，用Kimi的重新画图
-                    kimi_structure = kimi_result.get("kimi_structure")
+                    if symbol in ("BTC", "ETH"):
+                        # Visual mode for top-tier assets: generate raw chart first
+                        raw_chart_filename = f"ew_{symbol}_{timeframe}_{timestamp}_raw.png"
+                        raw_chart_path = os.path.join(screenshots_dir, raw_chart_filename)
+                        plot_raw_candlestick(klines, symbol, timeframe, raw_chart_path, pivots=candidate.get("zigzag_pivots"))
+
+                        kimi_result = await asyncio.wait_for(
+                            analyze_elliott_wave_with_kimi(
+                                chart_path=raw_chart_path,
+                                symbol=symbol,
+                                timeframe=timeframe,
+                                wave_candidate=candidate,
+                            ),
+                            timeout=360,
+                        )
+                    else:
+                        # Text-only fast mode for altcoins
+                        kimi_result = await asyncio.wait_for(
+                            analyze_elliott_wave_text_only(
+                                candidate=candidate,
+                                symbol=symbol,
+                                timeframe=timeframe,
+                            ),
+                            timeout=120,
+                        )
+
+                    candidate["kimi_analysis"] = kimi_result
+                    kimi_structure = kimi_result.get("kimi_structure") if kimi_result else None
+
+                    # 3. 如果Kimi返回有效浪型结构，用Kimi的重新画图
                     if kimi_structure and "waves" in kimi_structure:
                         from chart_generator import plot_kimi_annotated_wave
                         kimi_chart_filename = f"ew_{symbol}_{timeframe}_{timestamp}_kimi.png"
@@ -537,13 +681,27 @@ async def refresh_elliott_wave(request: Request, body: dict = Body(...)):
                             candidate["direction"] = kimi_structure.get("direction", candidate.get("direction"))
                             candidate["current_wave"] = kimi_structure.get("current_wave", "")
                         kimi_annotated = True
+
+                    # 附加完整 Kimi 分析并重新生成带支撑阻力的统一图
+                    if kimi_result:
+                        try:
+                            plot_elliott_wave_unified(
+                                klines,
+                                candidate,
+                                candidate.get("projections", projections),
+                                symbol,
+                                timeframe,
+                                chart_path,
+                            )
+                        except Exception as plot_err:
+                            logger.warning(f"Failed to regenerate unified chart with Kimi SR: {plot_err}")
                 except asyncio.TimeoutError:
-                    logger.warning("Kimi Vision analysis timed out after 90s, using algorithm result")
+                    logger.warning("Kimi Vision analysis timed out after 360s, using algorithm result")
                     candidate["kimi_analysis"] = {"error": "timeout"}
                 except ImportError:
                     logger.warning("kimi_vision module not available, skipping Kimi analysis")
                 except Exception as kimi_err:
-                    logger.warning(f"Kimi Vision analysis failed: {kimi_err}")
+                    logger.warning(f"Kimi analysis failed: {kimi_err}")
                     candidate["kimi_analysis"] = {"error": str(kimi_err)}
 
             if not kimi_annotated:
@@ -558,7 +716,6 @@ async def refresh_elliott_wave(request: Request, body: dict = Body(...)):
             chart_paths=chart_paths,
             klines_count=len(klines),
             kimi_analysis=kimi_analysis_dict,
-            ttl=86400,
         )
 
         elapsed_ms = int((time.time() - start_time) * 1000)
@@ -1481,7 +1638,7 @@ async def trigger_refresh(request: Request):
         try:
             sentiment = await analyzer.analyze()
             sentiment = await _enrich_with_backtest(sentiment, "1d")
-            await db_set("sentiment", sentiment, ttl_seconds=900)
+            await db_set("sentiment", sentiment, ttl_seconds=15000)
         except Exception:
             pass
 

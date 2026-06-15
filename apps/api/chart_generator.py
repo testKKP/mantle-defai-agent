@@ -24,6 +24,19 @@ def _ensure_dir(path: str) -> None:
         os.makedirs(dir_name, exist_ok=True)
 
 
+def _format_price_label(price: Optional[float]) -> str:
+    """Format a price for chart labels; preserve precision for low-priced tokens."""
+    if price is None:
+        return ""
+    p = float(price)
+    if p >= 1:
+        return f"{p:,.0f}"
+    elif p >= 0.01:
+        return f"{p:,.4f}"
+    else:
+        return f"{p:,.6f}"
+
+
 def _ms_to_date_num(ms_ts: float) -> float:
     """Convert millisecond timestamp to matplotlib date number."""
     return mdates.date2num(datetime.fromtimestamp(ms_ts / 1000.0))
@@ -82,8 +95,10 @@ def plot_raw_candlestick(
     symbol: str,
     timeframe: str,
     output_path: str,
+    pivots: Optional[List[Tuple[int, float, str]]] = None,
+    show_zigzag: bool = True,
 ) -> str:
-    """Generate a raw candlestick chart without any wave annotations."""
+    """Generate a raw candlestick chart with optional ZigZag pivot annotations."""
     _ensure_dir(output_path)
     if not klines:
         logger.warning("plot_raw_candlestick: empty klines")
@@ -97,8 +112,29 @@ def plot_raw_candlestick(
     bar_width = 0.6 * (dates[1] - dates[0]) if n_bars > 1 else 0.0005
     for i in range(n_bars):
         _draw_candlestick(ax, dates[i], opens[i], highs[i], lows[i], closes[i], width=bar_width)
-    
-    ax.set_title(f"{symbol}/{timeframe} - Raw Chart for Analysis", fontsize=14, fontweight="bold", pad=10)
+
+    # --- ZigZag pivot annotations ---
+    if show_zigzag and pivots:
+        valid_pivots: List[Tuple[int, float, str]] = []
+        for p in pivots:
+            if not isinstance(p, (list, tuple)) or len(p) < 3:
+                continue
+            idx = int(p[0])
+            price = float(p[1])
+            ptype = str(p[2]).lower()
+            if 0 <= idx < n_bars:
+                valid_pivots.append((idx, price, ptype))
+
+        if valid_pivots:
+            conn_x = [dates[idx] for idx, _, _ in valid_pivots]
+            conn_y = [price for _, price, _ in valid_pivots]
+            ax.plot(conn_x, conn_y, color="#2962ff", linestyle="--", linewidth=1.2, alpha=0.8, zorder=4)
+
+            for idx, price, ptype in valid_pivots:
+                color = "#2962ff" if ptype == "peak" else "#ff6f00"
+                ax.plot(dates[idx], price, marker="o", color=color, markersize=6, zorder=5)
+
+    ax.set_title(f"{symbol}/{timeframe} - Raw Chart + ZigZag Pivots for Analysis", fontsize=14, fontweight="bold", pad=10)
     ax.set_xlabel("Date", fontsize=10)
     ax.set_ylabel("Price", fontsize=10)
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
@@ -410,7 +446,21 @@ def plot_kimi_annotated_wave(
     
     # Draw waves from kimi_structure
     waves = kimi_structure.get("waves", [])
+    # Only show the most recent 5 waves to focus on near-term price action
+    waves = waves[-5:] if len(waves) > 5 else waves
     direction = kimi_structure.get("direction", "up")
+    
+    def _get_wave_price(w: Dict[str, Any], idx: int) -> float:
+        """Return high/low/close price at idx based on wave label parity."""
+        label = str(w.get("label", ""))
+        is_peak = label in ("1", "3", "5", "A", "C", "W", "Y") or label in ("(i)", "(iii)", "(v)")
+        is_trough = label in ("2", "4", "B", "D", "E", "X") or label in ("(ii)", "(iv)")
+        if is_peak:
+            return highs[idx] if 0 <= idx < n_bars else closes[idx]
+        elif is_trough:
+            return lows[idx] if 0 <= idx < n_bars else closes[idx]
+        else:
+            return closes[idx]
     
     # Draw dashed connecting lines
     conn_x: List[float] = []
@@ -421,8 +471,8 @@ def plot_kimi_annotated_wave(
         if 0 <= s_idx < n_bars and 0 <= e_idx < n_bars:
             conn_x.extend([dates[s_idx], dates[e_idx], None])
             # Use actual price at indices if available, else approximate
-            sp = w.get("start_price", closes[s_idx] if s_idx < len(closes) else closes[0])
-            ep = w.get("end_price", closes[e_idx] if e_idx < len(closes) else closes[-1])
+            sp = _get_wave_price(w, s_idx)
+            ep = _get_wave_price(w, e_idx)
             conn_y.extend([sp, ep, None])
     if conn_x:
         ax.plot(conn_x, conn_y, color="#2962ff", linestyle="--", linewidth=1.2, alpha=0.8, zorder=4)
@@ -464,6 +514,8 @@ def plot_kimi_annotated_wave(
     
     # Draw sub_waves if present
     sub_waves = kimi_structure.get("sub_waves", [])
+    # Only show the most recent 5 sub-waves to focus on near-term price action
+    sub_waves = sub_waves[-5:] if len(sub_waves) > 5 else sub_waves
     for sw in sub_waves:
         label = str(sw.get("label", ""))
         if not label:
@@ -522,7 +574,7 @@ def plot_kimi_annotated_wave(
             ax.text(
                 dates[-1] + (dates[-1] - dates[0]) * 0.005,
                 level,
-                f"Support {level:,.0f}",
+                f"Support {_format_price_label(level)}",
                 fontsize=7,
                 color='#22c55e',
                 va='center',
@@ -535,13 +587,69 @@ def plot_kimi_annotated_wave(
             ax.text(
                 dates[-1] + (dates[-1] - dates[0]) * 0.005,
                 level,
-                f"Resistance {level:,.0f}",
+                f"Resistance {_format_price_label(level)}",
                 fontsize=7,
                 color='#ef4444',
                 va='center',
                 ha='left',
                 zorder=5,
             )
+
+    # Key Support / Resistance from support_resistance_analysis
+    sr_analysis = kimi_structure.get("support_resistance_analysis", {})
+    key_support = sr_analysis.get("key_support")
+    key_resistance = sr_analysis.get("key_resistance")
+
+    if key_support:
+        ax.axhline(y=key_support, color='#22c55e', linestyle='-', alpha=0.7, linewidth=1.5, zorder=3)
+        ax.text(
+            dates[-1] + (dates[-1] - dates[0]) * 0.005,
+            key_support,
+            f"Key Support {_format_price_label(key_support)}",
+            fontsize=8,
+            color='#22c55e',
+            va='center',
+            ha='left',
+            zorder=5,
+        )
+    if key_resistance:
+        ax.axhline(y=key_resistance, color='#ef4444', linestyle='-', alpha=0.7, linewidth=1.5, zorder=3)
+        ax.text(
+            dates[-1] + (dates[-1] - dates[0]) * 0.005,
+            key_resistance,
+            f"Key Resistance {_format_price_label(key_resistance)}",
+            fontsize=8,
+            color='#ef4444',
+            va='center',
+            ha='left',
+            zorder=5,
+        )
+
+    # Breakout / directional bias annotation box
+    directional_bias = kimi_structure.get("directional_bias", {})
+    primary_direction = directional_bias.get("primary_direction", "")
+    primary_probability = directional_bias.get("primary_probability", 0.0)
+    breakout_direction = sr_analysis.get("breakout_direction", "")
+    breakout_confirmed = sr_analysis.get("breakout_confirmed", False)
+    sr_text = sr_analysis.get("analysis", "")
+
+    info_lines = []
+    if primary_direction:
+        info_lines.append(f"Bias: {primary_direction.upper()} {primary_probability*100:.0f}%")
+    if breakout_direction:
+        info_lines.append(f"Breakout: {breakout_direction.upper()} {'confirmed' if breakout_confirmed else 'forming'}")
+    if sr_text:
+        info_lines.append(sr_text[:120])
+    if info_lines:
+        ax.text(
+            0.02, 0.98, "\n".join(info_lines),
+            transform=ax.transAxes,
+            fontsize=9,
+            verticalalignment='top',
+            color='black',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.85),
+            zorder=6,
+        )
 
     # Axis formatting
     ax.set_xlabel("Date", fontsize=10)
@@ -820,6 +928,8 @@ def plot_elliott_wave_unified(
 
     # 2. Wave annotations
     waves = wave_candidate.get("waves", [])
+    # Only show the most recent 5 waves to focus on near-term price action
+    waves = waves[-5:] if len(waves) > 5 else waves
     direction = wave_candidate.get("direction", "up")
     wave_type = wave_candidate.get("wave_type", "impulse")
 
@@ -926,6 +1036,64 @@ def plot_elliott_wave_unified(
                     ha="left",
                     zorder=5,
                 )
+
+    # 3.5 Key Support / Resistance from Kimi analysis
+    kimi_analysis = wave_candidate.get("kimi_analysis", {})
+    sr_analysis = {}
+    directional_bias = {}
+    if isinstance(kimi_analysis, dict):
+        # Parsed Kimi result may have SR/directional_bias at top level, or nested under kimi_structure.
+        sr_analysis = kimi_analysis.get("support_resistance_analysis") or {}
+        if not sr_analysis:
+            sr_analysis = kimi_analysis.get("kimi_structure", {}).get("support_resistance_analysis", {}) or {}
+        directional_bias = kimi_analysis.get("directional_bias") or {}
+        if not directional_bias:
+            directional_bias = kimi_analysis.get("kimi_structure", {}).get("directional_bias", {}) or {}
+    key_support = sr_analysis.get("key_support")
+    key_resistance = sr_analysis.get("key_resistance")
+
+    if key_support and min(lows) * 0.5 <= key_support <= max(highs) * 1.5:
+        ax_main.axhline(
+            y=key_support,
+            color='#22c55e',
+            linestyle='-',
+            linewidth=1.5,
+            alpha=0.7,
+            xmin=0.02,
+            xmax=0.98,
+            zorder=3,
+        )
+        ax_main.text(
+            dates[-1] + date_span * 0.005,
+            key_support,
+            f"Key Support {_format_price_label(key_support)}",
+            fontsize=8,
+            color='#22c55e',
+            va='center',
+            ha='left',
+            zorder=5,
+        )
+    if key_resistance and min(lows) * 0.5 <= key_resistance <= max(highs) * 1.5:
+        ax_main.axhline(
+            y=key_resistance,
+            color='#ef4444',
+            linestyle='-',
+            linewidth=1.5,
+            alpha=0.7,
+            xmin=0.02,
+            xmax=0.98,
+            zorder=3,
+        )
+        ax_main.text(
+            dates[-1] + date_span * 0.005,
+            key_resistance,
+            f"Key Resistance {_format_price_label(key_resistance)}",
+            fontsize=8,
+            color='#ef4444',
+            va='center',
+            ha='left',
+            zorder=5,
+        )
 
     # 4. Highlight current forming wave (red dashed line)
     if waves and len(klines) > 0:
@@ -1127,6 +1295,64 @@ def plot_elliott_wave_unified(
                   transform=ax_panel.transAxes,
                   fontsize=10, color='white',
                   ha='center', va='top')
+
+    # 5.5 Support / Resistance & Directional Bias
+    if sr_analysis:
+        ax_panel.text(0.5, 0.35, "S/R & BIAS",
+                      transform=ax_panel.transAxes,
+                      fontsize=11, fontweight='bold', color='#7ED7C4',
+                      ha='center', va='top')
+        ax_panel.axhline(y=0.33, xmin=0.05, xmax=0.95, color='#555555', linewidth=0.5)
+
+        sr_y = 0.29
+        if key_support:
+            ax_panel.text(0.1, sr_y, f"Key Support: {key_support:,.2f}",
+                          transform=ax_panel.transAxes,
+                          fontsize=9, color='#22c55e',
+                          ha='left', va='top')
+            sr_y -= 0.04
+        if key_resistance:
+            ax_panel.text(0.1, sr_y, f"Key Resistance: {key_resistance:,.2f}",
+                          transform=ax_panel.transAxes,
+                          fontsize=9, color='#ef4444',
+                          ha='left', va='top')
+            sr_y -= 0.04
+
+        # directional_bias already extracted from kimi_analysis/kimi_structure above
+        if directional_bias:
+            primary_direction = directional_bias.get("primary_direction", "")
+            primary_probability = directional_bias.get("primary_probability", 0.0)
+            secondary_direction = directional_bias.get("secondary_direction", "")
+            secondary_probability = directional_bias.get("secondary_probability", 0.0)
+            if primary_direction:
+                ax_panel.text(0.1, sr_y, f"Bias: {primary_direction.upper()} {primary_probability*100:.0f}%",
+                              transform=ax_panel.transAxes,
+                              fontsize=9, color='white',
+                              ha='left', va='top')
+                sr_y -= 0.04
+            if secondary_direction:
+                ax_panel.text(0.1, sr_y, f"Alt: {secondary_direction.upper()} {secondary_probability*100:.0f}%",
+                              transform=ax_panel.transAxes,
+                              fontsize=9, color='#999999',
+                              ha='left', va='top')
+                sr_y -= 0.04
+
+        breakout_direction = sr_analysis.get("breakout_direction", "")
+        breakout_confirmed = sr_analysis.get("breakout_confirmed", False)
+        if breakout_direction:
+            status = "confirmed" if breakout_confirmed else "forming"
+            ax_panel.text(0.1, sr_y, f"Breakout: {breakout_direction.upper()} ({status})",
+                          transform=ax_panel.transAxes,
+                          fontsize=9, color='#FFD93D',
+                          ha='left', va='top')
+            sr_y -= 0.04
+
+        analysis_text = sr_analysis.get("analysis", "")
+        if analysis_text:
+            ax_panel.text(0.1, sr_y, analysis_text[:80],
+                          transform=ax_panel.transAxes,
+                          fontsize=8, color='#aaaaaa',
+                          ha='left', va='top')
 
     # 6. Bottom info
     ax_panel.text(0.5, 0.12,

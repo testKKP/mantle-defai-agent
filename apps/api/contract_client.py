@@ -72,8 +72,8 @@ class RegistryClient:
     def submitter_address(self) -> Optional[str]:
         return self._account.address if self._account else None
 
-    def submit_signal(self, symbol: str, timeframe: str, data: str, data_hash: str) -> Optional[str]:
-        """Submit a single plaintext signal to the on-chain registry. Returns tx hash or None."""
+    def submit_signal(self, symbol: str, timeframe: str, encrypted_data: bytes, data_hash: str) -> Optional[str]:
+        """Submit a single encrypted signal to the on-chain registry. Returns tx hash or None."""
         if not self._configured or not self._contract or not self._account:
             logger.debug("[RegistryClient] Skipping submit_signal: not configured")
             return None
@@ -83,7 +83,7 @@ class RegistryClient:
                 self._contract.functions.submitSignal(
                     symbol,
                     timeframe,
-                    data,
+                    encrypted_data,
                     Web3.to_bytes(hexstr=data_hash),
                 )
             )
@@ -95,12 +95,12 @@ class RegistryClient:
 
     def submit_signals_batch(self, signals: List[Dict]) -> Optional[str]:
         """
-        Submit multiple plaintext signals in a batch.
+        Submit multiple encrypted signals in a batch.
         
         signals: list of dicts with keys:
             - symbol (str)
             - timeframe (str)
-            - data (str)
+            - encrypted_data (bytes)
             - data_hash (str) — hex string of keccak256 hash
         
         Returns tx hash or None.
@@ -115,14 +115,14 @@ class RegistryClient:
         try:
             symbols = [s["symbol"] for s in signals]
             timeframes = [s["timeframe"] for s in signals]
-            data_array = [s["data"] for s in signals]
+            encrypted_data_array = [s["encrypted_data"] for s in signals]
             data_hashes = [Web3.to_bytes(hexstr=s["data_hash"]) for s in signals]
 
             tx_hash = self._send_transaction(
                 self._contract.functions.submitSignalsBatch(
                     symbols,
                     timeframes,
-                    data_array,
+                    encrypted_data_array,
                     data_hashes,
                 )
             )

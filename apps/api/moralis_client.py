@@ -28,6 +28,9 @@ STABLECOIN_SYMBOLS = {
 
 
 class MoralisClient:
+    # 类级别标志：401/额度耗尽类错误在整个进程生命周期只记录一次，避免日志被刷爆
+    _api_error_warned = False
+
     def __init__(self):
         self.api_key = os.getenv("MORALIS_API_KEY")
         if not self.api_key:
@@ -47,6 +50,21 @@ class MoralisClient:
         }
         return mapping.get(chain, chain)
 
+    def _log_api_error(self, message: str, exception: Exception):
+        """记录 API 错误；对 401/额度类错误只记录一次，避免日志被刷爆。"""
+        err_str = str(exception).lower()
+        is_auth_or_quota_error = any(
+            keyword in err_str for keyword in ("401", "unauthorized", "quota", "forbidden", "403")
+        )
+        if is_auth_or_quota_error:
+            if not MoralisClient._api_error_warned:
+                logger.warning(f"{message}: {exception}")
+                MoralisClient._api_error_warned = True
+            else:
+                logger.debug(f"{message}: {exception}")
+        else:
+            logger.warning(f"{message}: {exception}")
+
     async def get_token_price(self, chain: str, token_address: str) -> Optional[float]:
         """获取代币实时 USD 价格"""
         if not self.api_key:
@@ -63,7 +81,7 @@ class MoralisClient:
                 return float(price)
             return None
         except Exception as e:
-            logger.warning(f"[MoralisClient] get_token_price error: {e}")
+            self._log_api_error("[MoralisClient] get_token_price error", e)
             return None
 
     async def get_wallet_transfers(self, chain: str, wallet_address: str, limit: int = 100) -> List[Dict[str, Any]]:
@@ -87,7 +105,7 @@ class MoralisClient:
                 return []
             return [self._normalize_transfer(chain, item) for item in tx_list if item]
         except Exception as e:
-            logger.warning(f"[MoralisClient] get_wallet_token_transfers error: {e}")
+            self._log_api_error("[MoralisClient] get_wallet_token_transfers error", e)
             return []
 
     async def get_token_transfers(self, chain: str, token_address: str, limit: int = 100) -> List[Dict[str, Any]]:
@@ -111,7 +129,7 @@ class MoralisClient:
                 return []
             return [self._normalize_transfer(chain, item) for item in tx_list if item]
         except Exception as e:
-            logger.warning(f"[MoralisClient] get_token_transfers error: {e}")
+            self._log_api_error("[MoralisClient] get_token_transfers error", e)
             return []
 
     async def get_token_metadata(self, chain: str, token_address: str) -> Optional[Dict[str, Any]]:
@@ -129,7 +147,7 @@ class MoralisClient:
                 return result[0]
             return None
         except Exception as e:
-            logger.warning(f"[MoralisClient] get_token_metadata error: {e}")
+            self._log_api_error("[MoralisClient] get_token_metadata error", e)
             return None
 
     def _normalize_transfer(self, chain: str, item: Dict[str, Any]) -> Dict[str, Any]:

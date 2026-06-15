@@ -974,7 +974,7 @@ async def db_save_elliott_wave(
     chart_paths: list,
     klines_count: int,
     kimi_analysis: dict = None,
-    ttl: int = 86400,
+    ttl: int = 15000,
 ) -> None:
     """Save Elliott Wave analysis result to cache."""
     if not db_manager._initialized or not AIOSQLITE_AVAILABLE:
@@ -982,6 +982,10 @@ async def db_save_elliott_wave(
     try:
         now = datetime.utcnow()
         expires_at = (now + timedelta(seconds=ttl)).isoformat()
+
+        # 直接保存传入的 chart_paths，不再做文件存在性过滤
+        saved_chart_paths = chart_paths or []
+
         async with db_manager._lock:
             async with aiosqlite.connect(db_manager.db_path) as db:
                 await db.execute(
@@ -1002,7 +1006,7 @@ async def db_save_elliott_wave(
                         symbol,
                         timeframe,
                         json.dumps(candidates, default=str, ensure_ascii=False),
-                        json.dumps(chart_paths, default=str, ensure_ascii=False),
+                        json.dumps(saved_chart_paths, default=str, ensure_ascii=False),
                         json.dumps(kimi_analysis, default=str, ensure_ascii=False) if kimi_analysis else None,
                         klines_count,
                         now.isoformat(),
@@ -1192,6 +1196,33 @@ async def db_get_recent_onchain_signals(limit: int = 100) -> List[Dict[str, Any]
                     return [dict(row) for row in rows]
     except Exception as e:
         logger.error(f"db_get_recent_onchain_signals error: {e}")
+        return []
+
+
+async def db_get_active_elliott_wave_chart_paths() -> List[str]:
+    """Get chart_paths of all non-expired Elliott Wave cache entries."""
+    if not db_manager._initialized or not AIOSQLITE_AVAILABLE:
+        return []
+    try:
+        now_iso = datetime.utcnow().isoformat()
+        async with db_manager._lock:
+            async with aiosqlite.connect(db_manager.db_path) as db:
+                async with db.execute(
+                    "SELECT chart_paths FROM elliott_wave_cache WHERE expires_at > ?",
+                    (now_iso,),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    result: List[str] = []
+                    for row in rows:
+                        try:
+                            paths = json.loads(row[0] or "[]")
+                            if isinstance(paths, list):
+                                result.extend(paths)
+                        except json.JSONDecodeError:
+                            pass
+                    return result
+    except Exception as e:
+        logger.error(f"db_get_active_elliott_wave_chart_paths error: {e}")
         return []
 
 

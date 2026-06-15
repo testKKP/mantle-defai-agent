@@ -1,10 +1,16 @@
 version: '3.8'
 
+# Local development stack.
+# Production frontend is served directly by nginx from /var/www/mantle
+# (built from apps/web-react/dist/); it is NOT run via this compose file.
+
 services:
   api:
     build: ./apps/api
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - PORT=8000
       - HOST=0.0.0.0
@@ -14,9 +20,21 @@ services:
       - RATE_LIMIT_WINDOW=60
     volumes:
       - ./apps/api/logs:/app/logs
+      # Persist runtime databases and cache outside the container
+      - ./apps/api/data:/app/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # Uncomment for local frontend development:
+  # web-react:
+  #   build: ./apps/web-react
+  #   ports:
+  #     - "5173:5173"
+  #   environment:
+  #     - VITE_API_BASE=http://localhost:8000
+  #   depends_on:
+  #     - api

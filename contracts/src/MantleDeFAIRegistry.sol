@@ -4,8 +4,8 @@ pragma solidity ^0.8.19;
 /**
  * @title MantleDeFAIRegistry
  * @notice On-chain signal registry with subscription-based access control.
- *         Signals are stored as plaintext JSON. Subscription system
- *         is reserved for future use; signal reading is public.
+ *         Signals are encrypted before storage. Only active subscribers
+ *         can read decrypted signals (via off-chain key distribution).
  */
 contract MantleDeFAIRegistry {
     /*//////////////////////////////////////////////////////////////
@@ -37,7 +37,7 @@ contract MantleDeFAIRegistry {
                                  STRUCTS
     //////////////////////////////////////////////////////////////*/
     struct Signal {
-        string data;             // Plaintext JSON signal payload
+        bytes encryptedData;     // AES-encrypted signal payload
         bytes32 dataHash;        // keccak256(original plaintext) for integrity
         uint256 timestamp;       // block timestamp at submission
         address submitter;       // authorized backend address
@@ -168,27 +168,27 @@ contract MantleDeFAIRegistry {
                             SIGNAL SUBMISSION
     //////////////////////////////////////////////////////////////*/
     /**
-     * @notice Submit a plaintext signal to the registry.
+     * @notice Submit an encrypted signal to the registry.
      * @param symbol      Trading pair symbol, e.g. "BTC"
      * @param timeframe   One of "1h", "4h", "1d", "1w"
-     * @param data        Plaintext JSON signal payload (string)
+     * @param encryptedData  AES-encrypted signal payload (bytes)
      * @param dataHash    keccak256 hash of original plaintext for integrity
      */
     function submitSignal(
         string calldata symbol,
         string calldata timeframe,
-        string calldata data,
+        bytes calldata encryptedData,
         bytes32 dataHash
     ) external onlyAuthorized {
         if (!validTimeframes[timeframe]) {
             revert InvalidTimeframe();
         }
-        if (bytes(data).length == 0) {
+        if (encryptedData.length == 0) {
             revert EmptyData();
         }
 
         Signal memory sig = Signal({
-            data: data,
+            encryptedData: encryptedData,
             dataHash: dataHash,
             timestamp: block.timestamp,
             submitter: msg.sender
@@ -211,23 +211,23 @@ contract MantleDeFAIRegistry {
     function submitSignalsBatch(
         string[] calldata symbols,
         string[] calldata timeframes,
-        string[] calldata dataArray,
+        bytes[] calldata encryptedDataArray,
         bytes32[] calldata dataHashes
     ) external onlyAuthorized {
         uint256 len = symbols.length;
         require(
             len == timeframes.length &&
-            len == dataArray.length &&
+            len == encryptedDataArray.length &&
             len == dataHashes.length,
             "Length mismatch"
         );
 
         for (uint256 i = 0; i < len; i++) {
             if (!validTimeframes[timeframes[i]]) continue;
-            if (bytes(dataArray[i]).length == 0) continue;
+            if (encryptedDataArray[i].length == 0) continue;
 
             Signal memory sig = Signal({
-                data: dataArray[i],
+                encryptedData: encryptedDataArray[i],
                 dataHash: dataHashes[i],
                 timestamp: block.timestamp,
                 submitter: msg.sender
@@ -250,11 +250,12 @@ contract MantleDeFAIRegistry {
     //////////////////////////////////////////////////////////////*/
     /**
      * @notice Get the latest signal for a symbol/timeframe.
-     *         Public — no subscription required.
+     *         Only active subscribers can call this.
      */
     function getLatestSignal(string calldata symbol, string calldata timeframe)
         external
         view
+        onlySubscribed
         returns (Signal memory)
     {
         Signal[] storage sigs = signals[symbol][timeframe];
@@ -269,7 +270,7 @@ contract MantleDeFAIRegistry {
         string calldata symbol,
         string calldata timeframe,
         uint256 index
-    ) external view returns (Signal memory) {
+    ) external view onlySubscribed returns (Signal memory) {
         require(index < signals[symbol][timeframe].length, "Invalid index");
         return signals[symbol][timeframe][index];
     }
@@ -282,7 +283,7 @@ contract MantleDeFAIRegistry {
         string calldata timeframe,
         uint256 offset,
         uint256 limit
-    ) external view returns (Signal[] memory) {
+    ) external view onlySubscribed returns (Signal[] memory) {
         Signal[] storage sigs = signals[symbol][timeframe];
         uint256 total = sigs.length;
 
@@ -312,40 +313,6 @@ contract MantleDeFAIRegistry {
         returns (uint256)
     {
         return signals[symbol][timeframe].length;
-    }
-
-    /**
-     * @notice Verify signal integrity and freshness.
-     * @param symbol Trading pair symbol, e.g. "BTC"
-     * @param timeframe Timeframe, e.g. "1d"
-     * @param index Signal index in the signals array
-     * @return isValid True if signal passes all checks
-     * @return reason Human-readable verification result
-     */
-    function verifySignal(
-        string calldata symbol,
-        string calldata timeframe,
-        uint256 index
-    ) external view returns (bool isValid, string memory reason) {
-        require(index < signals[symbol][timeframe].length, "Invalid index");
-        Signal memory sig = signals[symbol][timeframe][index];
-
-        // 1. Check submitter authorization
-        if (!authorizedSubmitters[sig.submitter]) {
-            return (false, "UNAUTHORIZED: Submitter not whitelisted");
-        }
-
-        // 2. Check data integrity (keccak256 hash match)
-        if (keccak256(bytes(sig.data)) != sig.dataHash) {
-            return (false, "TAMPERED: Data hash mismatch");
-        }
-
-        // 3. Check freshness (24 hours for mid-to-long term strategies)
-        if (block.timestamp > sig.timestamp + 24 hours) {
-            return (false, "EXPIRED: Signal older than 24 hours");
-        }
-
-        return (true, "VERIFIED: Signal is authentic and fresh");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -393,23 +360,6 @@ contract MantleDeFAIRegistry {
     function transferOwnership(address newOwner) external onlyOwner {
         require(newOwner != address(0), "Zero address");
         owner = newOwner;
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                         SIGNAL VERIFICATION
-    //////////////////////////////////////////////////////////////*/
-    /**
-     * @notice Verify the latest signal for a symbol/timeframe.
-     *         Public — no subscription required.
-     */
-    function verifyLatestSignal(string calldata symbol, string calldata timeframe)
-        external view returns (bool isValid, string memory reason)
-    {
-        Signal[] storage sigs = signals[symbol][timeframe];
-        if (sigs.length == 0) {
-            return (false, "No signals");
-        }
-        return this.verifySignal(symbol, timeframe, sigs.length - 1);
     }
 
     /*//////////////////////////////////////////////////////////////

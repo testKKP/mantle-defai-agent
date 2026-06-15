@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application
-COPY main.py .
+# Copy application Python modules and ABI files
+COPY *.py .
+COPY abi/ abi/
 COPY .env.example .env
 
 # Create logs directory

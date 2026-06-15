@@ -30,15 +30,15 @@ from routes import api_router
 from routing_wizard import routing_router
 import state
 from state import data_aggregator, aggregator_scheduler, _unified_refresh_task, trend_scheduler
-from background import _run_unified_refresh
+from background import _run_unified_refresh, _run_elliott_wave_cleanup_scheduler, _ew_cleanup_scheduler_running
 from trend_scheduler import get_trend_scheduler
 
 # ============ Logging Setup ============
 logger.remove()
-logger.add("logs/api.log", rotation="10 MB", retention="7 days", level="INFO",
+logger.add("logs/api.log", rotation="10 MB", retention="7 days", level="WARNING",
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name} | {message}")
 logger.add(lambda msg: print(msg, end=""),
-    level="DEBUG" if os.getenv("DEBUG", "false").lower() == "true" else "INFO",
+    level="WARNING",
     format="{time:HH:mm:ss} | {level} | {message}")
 
 # ============ FastAPI App ============
@@ -46,7 +46,7 @@ logger.add(lambda msg: print(msg, end=""),
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events (startup/shutdown)."""
-    global data_aggregator, aggregator_scheduler, _unified_refresh_task, trend_scheduler, _ew_scheduler_task
+    global data_aggregator, aggregator_scheduler, _unified_refresh_task, trend_scheduler, _ew_scheduler_task, _ew_cleanup_scheduler_task
     logger.info("=" * 50)
     logger.info("Mantle DeFAI Trader API v1.2.0 starting...")
 
@@ -60,7 +60,7 @@ async def lifespan(app: FastAPI):
     # Pre-warm caches
     try:
         sentiment_result = await asyncio.wait_for(analyzer.analyze(), timeout=120)
-        await db_set("sentiment", sentiment_result, ttl_seconds=3960)
+        await db_set("sentiment", sentiment_result, ttl_seconds=15000)
         logger.info("Pre-warmed sentiment cache")
         # Enrich with backtest in background so service starts fast
         # but backtest data becomes available shortly after startup
@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
             try:
                 from backtest import _enrich_with_backtest
                 enriched = await _enrich_with_backtest(sentiment_result, "1d")
-                await db_set("sentiment", enriched, ttl_seconds=3960)
+                await db_set("sentiment", enriched, ttl_seconds=15000)
                 logger.info("Pre-warm backtest enrichment completed")
             except Exception as enrich_err:
                 logger.warning(f"Pre-warm backtest enrichment failed: {enrich_err}")
@@ -102,7 +102,7 @@ async def lifespan(app: FastAPI):
     try:
         state.set_unified_refresh_running(True)
         _unified_refresh_task = asyncio.create_task(_run_unified_refresh())
-        logger.info("Started unified refresh scheduler (1 hour)")
+        logger.info("Started unified refresh scheduler (4 hours)")
     except Exception as e:
         logger.warning(f"Failed to start unified refresh: {e}")
 
@@ -118,9 +118,16 @@ async def lifespan(app: FastAPI):
     try:
         from background import _run_elliott_wave_scheduler_with_restart
         _ew_scheduler_task = asyncio.create_task(_run_elliott_wave_scheduler_with_restart())
-        logger.info("Started Elliott Wave scheduler (hourly, auto-restart enabled)")
+        logger.info("Started Elliott Wave scheduler (every 4 hours, auto-restart enabled)")
     except Exception as e:
         logger.warning(f"Failed to start Elliott Wave scheduler: {e}")
+
+    # Start Elliott Wave screenshot cleanup scheduler (daily at 00:00 UTC / 08:00 CST)
+    try:
+        _ew_cleanup_scheduler_task = asyncio.create_task(_run_elliott_wave_cleanup_scheduler())
+        logger.info("Started Elliott Wave cleanup scheduler (daily at 00:00 UTC / 08:00 CST)")
+    except Exception as e:
+        logger.warning(f"Failed to start Elliott Wave cleanup scheduler: {e}")
 
     yield
 
@@ -159,6 +166,21 @@ async def lifespan(app: FastAPI):
             logger.info("Elliott Wave scheduler stopped")
     except Exception as e:
         logger.warning(f"Failed to stop Elliott Wave scheduler: {e}")
+
+    # Stop Elliott Wave cleanup scheduler
+    try:
+        _ew_cleanup_scheduler_running = False
+        if '_ew_cleanup_scheduler_task' in globals() and _ew_cleanup_scheduler_task:
+            _ew_cleanup_scheduler_task.cancel()
+            try:
+                await asyncio.wait_for(_ew_cleanup_scheduler_task, timeout=5)
+            except asyncio.TimeoutError:
+                logger.warning("Elliott Wave cleanup scheduler did not stop within 5s")
+            except asyncio.CancelledError:
+                pass
+            logger.info("Elliott Wave cleanup scheduler stopped")
+    except Exception as e:
+        logger.warning(f"Failed to stop Elliott Wave cleanup scheduler: {e}")
 
     # Close chain indexer session
     try:

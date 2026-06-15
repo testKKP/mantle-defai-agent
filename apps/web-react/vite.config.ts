@@ -8,18 +8,18 @@ export default defineConfig({
     port: 5173,
     host: true,
     proxy: {
-      '/api': { target: 'http://localhost:8000', changeOrigin: true },
-      '/health': { target: 'http://localhost:8000', changeOrigin: true },
-      '/screenshots': { target: 'http://localhost:8000', changeOrigin: true },
+      '/api': 'http://localhost:8000',
+      '/health': 'http://localhost:8000',
+      '/screenshots': 'http://localhost:8000',
     },
   },
   preview: {
     port: 5173,
     host: true,
     proxy: {
-      '/api': { target: 'http://localhost:8000', changeOrigin: true },
-      '/health': { target: 'http://localhost:8000', changeOrigin: true },
-      '/screenshots': { target: 'http://localhost:8000', changeOrigin: true },
+      '/api': 'http://localhost:8000',
+      '/health': 'http://localhost:8000',
+      '/screenshots': 'http://localhost:8000',
     },
   },
   build: {

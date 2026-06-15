@@ -1,5 +1,5 @@
 import axios, { type AxiosInstance } from 'axios';
-import type { SentimentData, OnChainOverview, BlockData, GasData, NetworkData, ProtocolData, SwapQuote, AppSettings, TrendsData, TVLHistory, WizardSessionData, ChainInfo, TokenInfo, RouteOption, AnalysisProgress, WalletCheckResult, TrendTransaction, HourlyAnalysis, HalfDaySummary, BigSummary, TrendAggregates, TrendTarget, ChainDistributionItem, LargeTransaction, MonitorSummaryItem, ElliottWaveResult, OnChainSignalRecord } from '../types';
+import type { SentimentData, OnChainOverview, BlockData, GasData, NetworkData, ProtocolData, SwapQuote, AppSettings, TrendsData, TVLHistory, WizardSessionData, ChainInfo, TokenInfo, RouteOption, AnalysisProgress, WalletCheckResult, TrendTransaction, HourlyAnalysis, HalfDaySummary, BigSummary, TrendAggregates, TrendTarget, ChainDistributionItem, LargeTransaction, MonitorSummaryItem, ElliottWaveResult } from '../types';
 
 const DEFAULT_SETTINGS: AppSettings = {
   apiBase: import.meta.env.VITE_API_BASE || '',
@@ -29,14 +29,9 @@ export function saveSettings(settings: Partial<AppSettings>): void {
 }
 
 function createClient(): AxiosInstance {
-  let baseURL = currentSettings.apiBase;
-  // 开发环境：如果当前页面是 localhost，使用相对路径让 Vite proxy 工作
-  if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-    baseURL = '';
-  }
   return axios.create({
-    baseURL,
-    timeout: 45000,
+    baseURL: currentSettings.apiBase,
+    timeout: 15000,
     headers: {
       'Content-Type': 'application/json',
     },
@@ -424,20 +419,6 @@ export async function getMonitorSummary(hours?: number): Promise<{ success: bool
 
 // ============ Elliott Wave API ============
 
-export async function getAllElliottWaves(timeframe: string = '1d'): Promise<Array<{
-  symbol: string;
-  timeframe: string;
-  chart_paths: string[];
-  computed_at: string;
-  wave_pattern: string | null;
-}>> {
-  const res = await apiClient.get('/api/sentiment/elliott-wave/list', {
-    params: { timeframe },
-  });
-  if (res.data?.success) return res.data.data || [];
-  return [];
-}
-
 export async function getElliottWave(symbol: string, timeframe: string = '1d'): Promise<ElliottWaveResult | null> {
   const res = await apiClient.get('/api/sentiment/elliott-wave', {
     params: { symbol, timeframe },
@@ -445,19 +426,4 @@ export async function getElliottWave(symbol: string, timeframe: string = '1d'): 
   });
   if (res.data?.success) return res.data.data;
   return null;
-}
-
-export async function analyzeElliottWave(symbol: string, timeframe: string = '1d'): Promise<ElliottWaveResult | null> {
-  const res = await apiClient.post('/api/sentiment/elliott-wave', { symbol, timeframe }, { timeout: 30000 });
-  if (res.data?.success) return res.data.data;
-  return null;
-}
-
-export async function getRecentOnChainSignals(limit = 100): Promise<{ success: boolean; count: number; data: OnChainSignalRecord[] }> {
-  const res = await apiClient.get('/api/onchain/signals/recent', {
-    params: { limit },
-    timeout: 10000,
-  });
-  if (!res.data?.success) throw new Error(res.data?.message || 'Failed to load recent on-chain signals');
-  return res.data;
 }

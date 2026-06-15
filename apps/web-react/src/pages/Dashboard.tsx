@@ -1,20 +1,17 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   TrendingUp, TrendingDown, Minus, Blocks, Fuel,
   BarChart3, PieChart, Zap, ArrowRight, Clock, ChevronUp,
-  ChevronDown, Layers, Gauge, AlertTriangle,
-  ShieldAlert, Target, Eye, Timer, ArrowUpRight, ArrowDownRight,
-  Users, Skull
+  ChevronDown, Layers, Gauge, HelpCircle
 } from 'lucide-react';
-import type { SentimentData, CalculationStep } from '../types';
+import {
+  AreaChart, Area,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer
+} from 'recharts';
+import type { SentimentData, TokenData, ProtocolData, CalculationStep, OnChainOverview } from '../types';
+import { useApp } from '../context/AppContext';
 import { useTranslation } from 'react-i18next';
-import { translateCalcStep, translateCalcDescription, translateRiskWarning } from '../utils/translateBackend';
-import { useReadContract } from 'wagmi';
-import { mantleSepoliaTestnet } from 'viem/chains';
-import registryAbi from '../abi/MantleDeFAIRegistry.json';
-import { parseSignalData } from '../hooks/useSignalDecrypt';
-import sha256 from 'crypto-js/sha256';
-import { getLatestSentiment, getOnChainOverview } from '../services/api';
+import { translateCalcStep, translateCalcDescription } from '../utils/translateBackend';
 
 /* ───────────────────────────────
    工具函数
@@ -53,22 +50,6 @@ function formatTimeAgo(dateStr?: string, t?: (key: string) => string): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}${t ? t('time.minutesAgo') : 'm ago'}`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}${t ? t('time.hoursAgo') : 'h ago'}`;
   return `${Math.floor(diff / 86400)}${t ? t('time.daysAgo') : 'd ago'}`;
-}
-
-function getFNGColor(value: number): string {
-  if (value <= 20) return '#ef4444';
-  if (value <= 40) return '#f97316';
-  if (value <= 60) return '#f59e0b';
-  if (value <= 80) return '#84cc16';
-  return '#10b981';
-}
-
-function getFNGLabel(value: number, t: (key: string) => string): string {
-  if (value <= 20) return t('fng.extremeFear');
-  if (value <= 40) return t('fng.fear');
-  if (value <= 60) return t('fng.neutral');
-  if (value <= 80) return t('fng.greed');
-  return t('fng.extremeGreed');
 }
 
 /* ───────────────────────────────
@@ -230,56 +211,6 @@ function CountCard({
 }
 
 /* ───────────────────────────────
-   风险警告横幅
-   ─────────────────────────────── */
-function RiskWarningBanner({ warning, t }: { warning?: string; t: (key: string) => string }) {
-  if (!warning) return null;
-  return (
-    <div className="relative overflow-hidden rounded-xl border border-red-500/20 bg-gradient-to-r from-red-950/60 via-red-900/30 to-red-950/60 px-5 py-3.5">
-      <div className="absolute inset-0 animate-pulse bg-red-500/5" />
-      <div className="relative flex items-center gap-3">
-        <div className="flex-shrink-0">
-          <ShieldAlert className="w-5 h-5 text-red-400 animate-pulse" />
-        </div>
-        <div className="flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-red-300">{t('risk.warning')}</span>
-            <span className="text-xs text-red-400/70 px-1.5 py-0.5 rounded bg-red-500/10 border border-red-500/20">{t('risk.highRisk')}</span>
-          </div>
-          <p className="text-sm text-red-200/80 mt-0.5">{translateRiskWarning(warning)}</p>
-        </div>
-        <AlertTriangle className="w-5 h-5 text-red-400/50 flex-shrink-0" />
-      </div>
-    </div>
-  );
-}
-
-/* ───────────────────────────────
-   Hash 验证徽章
-   ─────────────────────────────── */
-function VerificationBadge({ status }: { status: 'verified' | 'mismatch' | 'pending' }) {
-  if (status === 'verified') {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-        ✓ Verified
-      </span>
-    );
-  }
-  if (status === 'mismatch') {
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
-        ⚠ Data Mismatch
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-500/10 text-gray-400 border border-gray-500/20">
-      Verifying...
-    </span>
-  );
-}
-
-/* ───────────────────────────────
    情绪 Tab 1: 总览
    ─────────────────────────────── */
 function SentimentOverview({ sentiment, loading, t }: { sentiment: SentimentData | null; loading: boolean; t: (key: string) => string }) {
@@ -303,7 +234,7 @@ function SentimentOverview({ sentiment, loading, t }: { sentiment: SentimentData
     );
   }
 
-  const { sentiment_index, bullish_count, neutral_count, bearish_count, timestamp, data_freshness, fng } = sentiment;
+  const { sentiment_index, bullish_count, neutral_count, bearish_count, timestamp, data_freshness } = sentiment;
   const label = getSentimentLabel(sentiment_index, t);
   const color = getSentimentColor(sentiment_index);
 
@@ -328,7 +259,7 @@ function SentimentOverview({ sentiment, loading, t }: { sentiment: SentimentData
         </div>
       </div>
 
-      {/* 下排: 3 个计数 + FNG */}
+      {/* 下排: 3 个计数 */}
       <div className="grid grid-cols-3 gap-3">
         <CountCard
           label={t('dashboard.bullish')}
@@ -352,22 +283,6 @@ function SentimentOverview({ sentiment, loading, t }: { sentiment: SentimentData
           active={sentiment_index < 40}
         />
       </div>
-
-      {/* FNG 恐惧贪婪指数 */}
-      {fng && (
-        <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-white/5 bg-gray-800/30">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-orange-500/10">
-            <Skull className="w-4 h-4 text-orange-400" />
-          </div>
-          <div className="flex-1">
-            <div className="text-xs text-gray-500">{t('sentiment.fearGreedIndex')}</div>
-            <div className="flex items-center gap-2">
-              <span className="text-lg font-bold" style={{ color: getFNGColor(fng.value) }}>{fng.value}</span>
-              <span className="text-sm font-medium" style={{ color: getFNGColor(fng.value) }}>{t(getFNGLabel(fng.value, t))}</span>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -548,219 +463,64 @@ const TIMEFRAME_LABELS: Record<string, string> = {
 };
 
 function Dashboard() {
+  const app = useApp();
+  const [sentiment, setSentiment] = useState<SentimentData | null>(null);
+  const [overview, setOverview] = useState<OnChainOverview | null>(null);
+  const [protocols, setProtocols] = useState<ProtocolData[]>([]);
   const [activeSentimentTab, setActiveSentimentTab] = useState<'overview' | 'sources' | 'logic'>('overview');
-  const loginRequired = false;
+  const [activeChartTab, setActiveChartTab] = useState<'activity' | 'gas' | 'tvl'>('activity');
+  const [loginRequired, setLoginRequired] = useState(false);
   const sentimentTimeframe = '1h';
   const { t } = useTranslation();
 
-  // API 数据状态
-  const [apiData, setApiData] = useState<any>(null);
-  const [onchainData, setOnchainData] = useState<any>(null);
-  const [apiLoading, setApiLoading] = useState(true);
-  const [_apiError, setApiError] = useState<string | null>(null);
-
-  // Hash 验证状态
-  const [verificationStatus, setVerificationStatus] = useState<'verified' | 'mismatch' | 'pending'>('pending');
-
-  const registryAddress = import.meta.env.VITE_REGISTRY_ADDRESS;
-
-  const latestSignal = useReadContract({
-    address: registryAddress || undefined,
-    abi: registryAbi,
-    functionName: 'getLatestSignal',
-    args: ['BTC', '1d'],
-    chainId: mantleSepoliaTestnet.id,
-    query: { enabled: !!registryAddress },
-  });
-
-  const signalData = latestSignal.data as { data: string; dataHash: string; timestamp: bigint; submitter: string } | undefined;
-
-  const onchainPayload = useMemo(() => {
-    if (!signalData) return null;
-    try {
-      return parseSignalData(signalData.data);
-    } catch {
-      return null;
-    }
-  }, [signalData]);
-
-  const loading = apiLoading;
-
-  // A. 从 API 获取完整数据
+  // Sync data from AppContext to avoid duplicate requests
   useEffect(() => {
-    Promise.allSettled([
-      getLatestSentiment(),
-      getOnChainOverview(),
-    ])
-      .then(([sentimentRes, onchainRes]) => {
-        if (sentimentRes.status === 'fulfilled') {
-          setApiData(sentimentRes.value);
-        } else {
-          setApiError(sentimentRes.reason?.message || 'Failed to load sentiment');
-        }
-        if (onchainRes.status === 'fulfilled') {
-          setOnchainData(onchainRes.value);
-        }
-        setApiLoading(false);
-      })
-      .catch(err => {
-        setApiError(err.message);
-        setApiLoading(false);
-      });
-  }, []);
-
-  // B. Hash 验证
-  useEffect(() => {
-    if (!onchainPayload?.full_data_hash || !apiData) {
-      setVerificationStatus('pending');
-      return;
+    if (app.sentiment) {
+      setSentiment(app.sentiment);
+      setLoginRequired(!!app.sentiment.login_required);
     }
-    try {
-      const cleanData = { ...apiData };
-      delete cleanData._cache_ttl;
-      delete cleanData._cached_at;
-      const jsonStr = JSON.stringify(cleanData);
-      const hash = sha256(jsonStr).toString();
-      setVerificationStatus(hash === onchainPayload.full_data_hash ? 'verified' : 'mismatch');
-    } catch {
-      setVerificationStatus('mismatch');
-    }
-  }, [onchainPayload?.full_data_hash, apiData]);
+    if (app.overview) setOverview(app.overview);
+    if (app.protocols) setProtocols(app.protocols);
+  }, [app.sentiment, app.overview, app.protocols]);
 
-  // Sentiment 数据从 API 读取
-  const sentimentData: SentimentData | null = useMemo(() => {
-    if (!apiData) return null;
-    const s = apiData;
-    return {
-      sentiment_index: s.sentiment_index ?? 50,
-      market_bias: (s.market_bias ?? 'neutral') as SentimentData['market_bias'],
-      bias_strength: (s.bias_strength ?? 'medium') as SentimentData['bias_strength'],
-      bullish_count: s.bullish_count ?? 0,
-      bearish_count: s.bearish_count ?? 0,
-      neutral_count: s.neutral_count ?? 0,
-      total_analyzed: s.total_analyzed ?? ((s.bullish_count ?? 0) + (s.neutral_count ?? 0) + (s.bearish_count ?? 0)),
-      timeframe: s.timeframe ?? '1d',
-      timestamp: s.timestamp ?? '',
-      data_freshness: s.data_freshness ?? s.timestamp ?? '',
-      top_bullish: (s.top_bullish ?? []).map((item: any) => ({
-        symbol: item.symbol ?? item.asset ?? '',
-        price: item.price ?? 0,
-        price_change_24h: item.price_change_24h ?? item.change_24h ?? 0,
-        alignment: 'bullish' as const,
-        strength: 'strong',
-        score: item.score ?? 0,
-        volume_trend: 'up',
-      })),
-      top_bearish: (s.top_bearish ?? []).map((item: any) => ({
-        symbol: item.symbol ?? item.asset ?? '',
-        price: item.price ?? 0,
-        price_change_24h: item.price_change_24h ?? item.change_24h ?? 0,
-        alignment: 'bearish' as const,
-        strength: 'weak',
-        score: item.score ?? 0,
-        volume_trend: 'down',
-      })),
-      mantle_data: s.mantle_data ?? {
-        block_number: s.block_number ?? 0,
-        tx_count: 0,
-        gas_ratio: 0,
-        gas_price_gwei: s.gas_gwei ?? 0,
-        on_chain_score: 50,
-        network_activity: 'active',
-      },
-      calculation_steps: s.calculation_steps ?? [],
-      fng: s.fng?.value !== undefined
-        ? { value: s.fng.value, classification: s.fng.classification ?? s.fng.label ?? '', timestamp: '' }
-        : s.fng_value !== undefined
-        ? { value: s.fng_value, classification: s.fng_label ?? '', timestamp: '' }
-        : undefined,
-    } as SentimentData;
-  }, [apiData]);
+  const trends = app.trends;
+  const tvlHistory = app.tvlHistory;
+  const loading = app.loading;
 
-  // 风险警告
-  const riskWarning = apiData?.risk_warning ?? apiData?.risk ?? '';
-
-  // AI 交易决策
-  const decision = apiData?.decision ?? null;
-
-  // 多周期持仓报告
-  const positionReport = useMemo(() => {
-    const raw = apiData?.position_report as any;
-    if (!raw) return null;
-    const mapped: any = {};
-    for (const [tf, data] of Object.entries(raw) as [string, any][]) {
-      mapped[tf] = {
-        long: data.long || [],
-        short: data.short || [],
-        watch: data.watch || '',
-      };
-    }
-    return mapped;
-  }, [apiData]);
-
-  // 艾略特波浪
-  const elliottWave = apiData?.elliott_wave ?? null;
-
-  // OnChain 指标
-  const mantleTvl = onchainData?.total_tvl ?? onchainData?.tvl;
-  const protocolCount = onchainData?.protocol_count ?? onchainData?.count;
-  const tvlChange24h = onchainData?.tvl_change_24h;
-  const activeAddresses = onchainData?.active_addresses;
-  // Protocols
-  const protocols = onchainData?.protocols ?? [];
-
-  // Overview
-  const overview = onchainData ?? null;
-
-  // 全市场分析表格从 API 读取
   const allTokens = useMemo(() => {
-    const source = apiData?.symbol_scores ?? [];
-    return source.map((s: any) => ({
-      symbol: s.symbol,
-      price: s.price ?? 0,
-      price_change_24h: s.change_24h ?? s.price_change_24h ?? 0,
-      alignment: (s.score ?? 50) >= 70 ? 'bullish' as const : (s.score ?? 50) >= 40 ? 'neutral' as const : 'bearish' as const,
-      strength: (s.score ?? 50) >= 70 ? 'strong' : (s.score ?? 50) >= 40 ? 'medium' : 'weak',
-      score: s.score ?? 0,
-      volume_trend: s.volume_trend ?? '--',
-    }));
-  }, [apiData]);
+    const tokens: TokenData[] = [];
+    if (sentiment?.top_bullish) tokens.push(...sentiment.top_bullish);
+    if (sentiment?.top_bearish) tokens.push(...sentiment.top_bearish);
+    const seen = new Set<string>();
+    return tokens.filter(t => {
+      if (seen.has(t.symbol)) return false;
+      seen.add(t.symbol);
+      return true;
+    });
+  }, [sentiment]);
 
+  const chartData = useMemo(() => {
+    if (activeChartTab === 'activity' && trends?.activity) return trends.activity;
+    if (activeChartTab === 'gas' && trends?.gas) return trends.gas;
+    if (activeChartTab === 'tvl') return tvlHistory.map(d => ({ timestamp: d.timestamp, tvl: d.tvl }));
+    return [];
+  }, [activeChartTab, trends, tvlHistory]);
 
-  // 空状态
-  if (!loading && !apiData) {
-    return (
-      <div className="space-y-6 p-4 md:p-6 max-w-7xl mx-auto">
-        <div className="card p-8 flex items-center justify-center min-h-[60vh]">
-          <div className="text-center space-y-4">
-            <Blocks className="w-12 h-12 text-gray-500 mx-auto" />
-            <p className="text-gray-400 text-lg">暂无链上数据</p>
-            <p className="text-gray-500 text-sm">请检查网络连接和合约地址配置</p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const chartDataKey = activeChartTab === 'tvl' ? 'tvl' : activeChartTab === 'gas' ? 'gas_price' : 'activity_index';
 
   return (
     <div className="space-y-6 p-4 md:p-6 max-w-7xl mx-auto">
-      {/* 风险警告横幅 */}
-      {riskWarning && <RiskWarningBanner warning={riskWarning} t={t} />}
-
       {/* 区块 a: 情绪研判区 */}
       <section className="card p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <Gauge className="w-5 h-5 text-[#7ED7C4]" />
-            <div>
-              <h2 className="text-lg font-semibold text-white">
-                {t('dashboard.title')}
-                <span className="ml-2 text-xs font-normal text-gray-500">({TIMEFRAME_LABELS[sentimentTimeframe] || sentimentTimeframe})</span>
-              </h2>
-              <p className="text-xs text-gray-500">{t('dashboard.agentDesc')}</p>
-            </div>
+        <div className="flex items-center gap-2 mb-4">
+          <Gauge className="w-5 h-5 text-[#7ED7C4]" />
+          <div>
+            <h2 className="text-lg font-semibold text-white">
+              {t('dashboard.title')}
+              <span className="ml-2 text-xs font-normal text-gray-500">({TIMEFRAME_LABELS[sentimentTimeframe] || sentimentTimeframe})</span>
+            </h2>
+            <p className="text-xs text-gray-500">{t('dashboard.agentDesc')}</p>
           </div>
-          <VerificationBadge status={verificationStatus} />
         </div>
         <div className="flex gap-1 mb-4 bg-gray-800/50 p-1 rounded-lg w-fit">
           {([
@@ -781,71 +541,21 @@ function Dashboard() {
             </button>
           ))}
         </div>
-        {activeSentimentTab === 'overview' && <SentimentOverview sentiment={sentimentData} loading={loading} t={t} />}
-        {activeSentimentTab === 'sources' && <SentimentSources sentiment={sentimentData} loading={loading} t={t} />}
-        {activeSentimentTab === 'logic' && <SentimentLogic sentiment={sentimentData} loading={loading} t={t} />}
+        {activeSentimentTab === 'overview' && <SentimentOverview sentiment={sentiment} loading={loading} t={t} />}
+        {activeSentimentTab === 'sources' && <SentimentSources sentiment={sentiment} loading={loading} t={t} />}
+        {activeSentimentTab === 'logic' && <SentimentLogic sentiment={sentiment} loading={loading} t={t} />}
       </section>
-
-      {/* AI 交易决策 */}
-      {decision && (
-        <section className="card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <Target className="w-5 h-5 text-[#7ED7C4]" />
-              <h2 className="text-lg font-semibold text-white">{t('dashboard.aiDecision')}</h2>
-            </div>
-            <VerificationBadge status={verificationStatus} />
-          </div>
-          <div className="flex flex-wrap items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400">{t('table.symbol')}</span>
-              <span className="text-sm font-bold text-white">{(decision as any).symbol ?? '--'}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400">{t('table.timeframe')}</span>
-              <span className="text-xs text-gray-300 px-2 py-0.5 rounded bg-gray-800">{(decision as any).timeframe ?? '--'}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400">{t('table.direction')}</span>
-              <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${
-                (decision as any).direction === 'long'
-                  ? 'bg-emerald-500/10 text-emerald-400'
-                  : (decision as any).direction === 'short'
-                    ? 'bg-red-500/10 text-red-400'
-                    : 'bg-amber-500/10 text-amber-400'
-              }`}>
-                {(decision as any).direction === 'long' ? <TrendingUp className="w-3 h-3" /> : (decision as any).direction === 'short' ? <TrendingDown className="w-3 h-3" /> : <Minus className="w-3 h-3" />}
-                {(decision as any).direction === 'long' ? t('trade.long') : (decision as any).direction === 'short' ? t('trade.short') : t('trade.wait')}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-gray-400">{t('table.confidence')}</span>
-              <span className="text-sm font-bold text-[#7ED7C4]">{(decision as any).confidence || 'N/A'}</span>
-            </div>
-            {(decision as any).reason && (
-              <div className="w-full mt-1">
-                <span className="text-xs text-gray-500">{t('backtest.reason')}</span>
-                <p className="text-sm text-gray-300 mt-0.5">{(decision as any).reason}</p>
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
 
       {/* 区块 b: 链上数据区 */}
       <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Blocks className="w-5 h-5 text-[#7ED7C4]" />
-            <h2 className="text-lg font-semibold text-white">{t('dashboard.chainOverview')}</h2>
-          </div>
-          <VerificationBadge status={verificationStatus} />
+        <div className="flex items-center gap-2">
+          <Blocks className="w-5 h-5 text-[#7ED7C4]" />
+          <h2 className="text-lg font-semibold text-white">{t('dashboard.chainOverview')}</h2>
         </div>
-        <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <MetricCard
             title={t('dashboard.totalTVL')}
-            value={mantleTvl != null ? `$${formatNumber(mantleTvl)}` : '--'}
+            value={overview ? `$${formatNumber(overview.total_tvl)}` : '--'}
             subValue={`${protocols.length} ${t('dashboard.protocols')}`}
             icon={Layers}
             trend="up"
@@ -853,47 +563,108 @@ function Dashboard() {
           />
           <MetricCard
             title={t('dashboard.volume24h')}
-            value={overview?.total_volume_24h != null ? `$${formatNumber(overview.total_volume_24h)}` : '--'}
+            value={overview ? `$${formatNumber(overview.total_volume_24h)}` : '--'}
             icon={BarChart3}
             loading={loading}
           />
           <MetricCard
             title={t('dashboard.activeProtocols')}
-            value={protocolCount != null ? `${protocolCount}` : '--'}
+            value={overview ? `${overview.protocol_count}` : '--'}
             icon={Zap}
             loading={loading}
           />
           <MetricCard
             title={t('dashboard.fees24h')}
-            value={overview?.total_fees_24h != null ? `$${formatNumber(overview.total_fees_24h)}` : '--'}
+            value={overview ? `$${formatNumber(overview.total_fees_24h)}` : '--'}
             icon={Fuel}
             loading={loading}
           />
-          <MetricCard
-            title={t('dashboard.tvlChange24h')}
-            value={tvlChange24h != null ? `${tvlChange24h >= 0 ? '+' : ''}${tvlChange24h.toFixed(2)}%` : '--'}
-            icon={TrendingUp}
-            trend={tvlChange24h != null ? (tvlChange24h >= 0 ? 'up' : 'down') : 'neutral'}
-            loading={loading}
-          />
-          <MetricCard
-            title={t('dashboard.activeAddresses')}
-            value={activeAddresses != null ? `${formatNumber(activeAddresses, 0)}` : '--'}
-            icon={Users}
-            loading={loading}
-          />
+        </div>
+        <div className="card p-5">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex gap-1 bg-gray-800/50 p-1 rounded-lg w-fit">
+              {([
+                { key: 'activity' as const, label: t('dashboard.activity') },
+                { key: 'gas' as const, label: t('dashboard.gas') },
+                { key: 'tvl' as const, label: t('dashboard.tvl') },
+              ]).map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setActiveChartTab(tab.key)}
+                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition ${
+                    activeChartTab === tab.key
+                      ? 'bg-[#2D6B5E] text-white'
+                      : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            {activeChartTab === 'activity' && (
+              <div className="group relative">
+                <HelpCircle className="w-4 h-4 text-gray-500 cursor-help" />
+                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 rounded-lg bg-gray-800 text-xs text-gray-300 whitespace-nowrap border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10 shadow-lg">
+                  {t('dashboard.activityTooltip')}
+                </div>
+              </div>
+            )}
+          </div>
+          {activeChartTab === 'activity' && (
+            <p className="text-xs text-gray-500 mb-2">
+              {t('dashboard.activityDescription')}
+            </p>
+          )}
+          <div className="h-64 w-full relative">
+            {loading ? (
+              <ShimmerBox className="h-full w-full" />
+            ) : chartData.length > 0 ? (
+              <ResponsiveContainer key={activeChartTab} width="100%" height="100%" minWidth={0} minHeight={0}>
+                <AreaChart data={chartData}>
+                  <defs>
+                    <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#7ED7C4" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#7ED7C4" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                  <XAxis
+                    dataKey="timestamp"
+                    tick={{ fill: '#9ca3af', fontSize: 12 }}
+                    tickFormatter={(v: string) => {
+                      const d = new Date(v);
+                      return `${d.getMonth() + 1}/${d.getDate()}`;
+                    }}
+                  />
+                  <YAxis tick={{ fill: '#9ca3af', fontSize: 12 }} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1f2937', border: '1px solid #374151', borderRadius: '8px' }}
+                    labelStyle={{ color: '#9ca3af' }}
+                  />
+                  <Area
+                    type="monotone"
+                    dataKey={chartDataKey}
+                    stroke="#7ED7C4"
+                    fill="url(#chartGrad)"
+                    strokeWidth={2}
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="flex items-center justify-center h-full text-gray-500">
+                {t('dashboard.noData')}
+              </div>
+            )}
+          </div>
         </div>
       </section>
 
       {/* 区块 c: 强势/弱势币种 (wallet or whitelist) */}
       {(!loginRequired) && (
       <section>
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <TrendingUp className="w-5 h-5 text-[#7ED7C4]" />
-            <h2 className="text-lg font-semibold text-white">{t('dashboard.tokenStrengthAnalysis')}</h2>
-          </div>
-          <VerificationBadge status={verificationStatus} />
+        <div className="flex items-center gap-2 mb-4">
+          <TrendingUp className="w-5 h-5 text-[#7ED7C4]" />
+          <h2 className="text-lg font-semibold text-white">{t('dashboard.tokenStrengthAnalysis')}</h2>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {/* 强势 */}
@@ -908,9 +679,9 @@ function Dashboard() {
                 <ShimmerBox className="h-12" />
                 <ShimmerBox className="h-12" />
               </div>
-            ) : sentimentData?.top_bullish && sentimentData.top_bullish.length > 0 ? (
+            ) : sentiment?.top_bullish && sentiment.top_bullish.length > 0 ? (
               <div className="space-y-2">
-                {sentimentData.top_bullish.map((token, i) => (
+                {sentiment.top_bullish.map((token, i) => (
                   <div key={token.symbol} className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-gray-800/40 border border-white/5">
                     <div className="flex items-center gap-3">
                       <span className="text-xs text-gray-500 w-4">{i + 1}</span>
@@ -941,9 +712,9 @@ function Dashboard() {
                 <ShimmerBox className="h-12" />
                 <ShimmerBox className="h-12" />
               </div>
-            ) : sentimentData?.top_bearish && sentimentData.top_bearish.length > 0 ? (
+            ) : sentiment?.top_bearish && sentiment.top_bearish.length > 0 ? (
               <div className="space-y-2">
-                {sentimentData.top_bearish.map((token, i) => (
+                {sentiment.top_bearish.map((token, i) => (
                   <div key={token.symbol} className="flex items-center justify-between px-3 py-2.5 rounded-lg bg-gray-800/40 border border-white/5">
                     <div className="flex items-center gap-3">
                       <span className="text-xs text-gray-500 w-4">{i + 1}</span>
@@ -966,160 +737,12 @@ function Dashboard() {
       </section>
       )}
 
-      {/* 多周期持仓报告 */}
-      {positionReport && (
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Target className="w-5 h-5 text-[#7ED7C4]" />
-              <h2 className="text-lg font-semibold text-white">{t('position.reportTitle')}</h2>
-            </div>
-            <VerificationBadge status={verificationStatus} />
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {(['1d', '4h', '1w'] as const).map((tf, idx) => {
-              const report = positionReport[tf];
-              const accentColors = ['#7ED7C4', '#4A9B8C', '#2D6B5E'];
-              const titles = [t('position.daily'), t('position.fourHour'), t('position.weekly')];
-              const subtitles = [t('position.dailyDesc'), t('position.fourHourDesc'), t('position.weeklyDesc')];
-              return (
-                <div key={tf} className="card p-4 flex flex-col h-full" style={{ borderTop: `2px solid ${accentColors[idx]}` }}>
-                  <div className="flex items-center gap-2 mb-3 pb-3 border-b border-white/5">
-                    <Timer className="w-4 h-4" style={{ color: accentColors[idx] }} />
-                    <div>
-                      <h3 className="text-sm font-semibold text-white">{titles[idx]}</h3>
-                      <p className="text-[10px] text-gray-500">{subtitles[idx]}</p>
-                    </div>
-                  </div>
-                  <div className="space-y-3 flex-1">
-                    {/* Long */}
-                    <div>
-                      <div className="flex items-center gap-1.5 mb-1.5">
-                        <ArrowUpRight className="w-3.5 h-3.5 text-emerald-400" />
-                        <span className="text-xs font-medium text-emerald-400">{t('position.longSuggestion')}</span>
-                        <span className="text-[10px] text-gray-500 ml-auto">{report?.long?.length ?? 0}</span>
-                      </div>
-                      {report?.long?.length > 0 ? (
-                        <div className="space-y-1">
-                          {report.long.map((item: any) => (
-                            <div key={item.symbol} className="flex items-center gap-2 px-2 py-1 rounded bg-emerald-500/5 border border-emerald-500/10">
-                              <span className="text-xs font-bold text-white">{item.symbol}</span>
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                                item.confidence === 'high' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' :
-                                item.confidence === 'medium' ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' :
-                                'border-red-500/30 bg-red-500/10 text-red-400'
-                              }`}>
-                                {item.confidence}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="text-[11px] text-gray-600 py-1">{t('position.noLongSignals')}</div>
-                      )}
-                    </div>
-                    {/* Short */}
-                    <div>
-                      <div className="flex items-center gap-1.5 mb-1.5">
-                        <ArrowDownRight className="w-3.5 h-3.5 text-red-400" />
-                        <span className="text-xs font-medium text-red-400">{t('position.shortSuggestion')}</span>
-                        <span className="text-[10px] text-gray-500 ml-auto">{report?.short?.length ?? 0}</span>
-                      </div>
-                      {report?.short?.length > 0 ? (
-                        <div className="space-y-1">
-                          {report.short.map((item: any) => (
-                            <div key={item.symbol} className="flex items-center gap-2 px-2 py-1 rounded bg-red-500/5 border border-red-500/10">
-                              <span className="text-xs font-bold text-white">{item.symbol}</span>
-                              <span className={`text-[10px] px-1.5 py-0.5 rounded border ${
-                                item.confidence === 'high' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' :
-                                item.confidence === 'medium' ? 'border-amber-500/30 bg-amber-500/10 text-amber-400' :
-                                'border-red-500/30 bg-red-500/10 text-red-400'
-                              }`}>
-                                {item.confidence}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="text-[11px] text-gray-600 py-1">{t('position.noShortSignals')}</div>
-                      )}
-                    </div>
-                    {/* Watch */}
-                    {report?.watch && (
-                      <div className="flex items-start gap-1.5 px-2 py-2 rounded bg-amber-500/5 border border-amber-500/10">
-                        <Eye className="w-3.5 h-3.5 text-amber-400 mt-0.5 flex-shrink-0" />
-                        <span className="text-[11px] text-amber-200/70">{report.watch}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      {/* 艾略特波浪简要 */}
-      {elliottWave && (
-        <section className="card p-5">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <TrendingUp className="w-5 h-5 text-[#7ED7C4]" />
-              <h3 className="text-lg font-semibold text-white">{t('elliottWave.title')}</h3>
-            </div>
-            <VerificationBadge status={verificationStatus} />
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-gray-800/50 rounded-lg p-3">
-              <div className="text-xs text-gray-500">{t('elliottWave.pattern')}</div>
-              <div className="text-sm font-semibold text-white">{(elliottWave as any).wave_pattern ?? '--'}</div>
-            </div>
-            <div className="bg-gray-800/50 rounded-lg p-3">
-              <div className="text-xs text-gray-500">{t('elliottWave.direction')}</div>
-              <div className={`text-sm font-semibold ${(elliottWave as any).direction === 'up' ? 'text-emerald-400' : 'text-red-400'}`}>
-                {(elliottWave as any).direction === 'up' ? t('trade.long') : (elliottWave as any).direction === 'down' ? t('trade.short') : '--'}
-              </div>
-            </div>
-            <div className="bg-gray-800/50 rounded-lg p-3">
-              <div className="text-xs text-gray-500">{t('elliottWave.currentWave')}</div>
-              <div className="text-sm font-semibold text-white">
-                {typeof (elliottWave as any).current_wave === 'string'
-                  ? (elliottWave as any).current_wave.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())
-                  : (elliottWave as any).current_wave !== undefined
-                    ? `Wave ${(elliottWave as any).current_wave}`
-                    : '--'}
-              </div>
-            </div>
-            <div className="bg-gray-800/50 rounded-lg p-3">
-              <div className="text-xs text-gray-500">{t('elliottWave.score')}</div>
-              <div className="text-sm font-semibold text-[#7ED7C4]">
-                {typeof (elliottWave as any).score === 'number' ? `${((elliottWave as any).score * 100).toFixed(0)}%` : '--'}
-              </div>
-            </div>
-          </div>
-          {(elliottWave as any).chart_path && (
-            <div className="mt-4 rounded-lg overflow-hidden border border-gray-800">
-              <img
-                src={`${import.meta.env.VITE_API_BASE || ''}${(elliottWave as any).chart_path}`}
-                alt={`Elliott Wave ${(elliottWave as any).wave_pattern ?? ''}`}
-                className="w-full"
-                style={{ maxHeight: 200, objectFit: 'cover' }}
-                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-              />
-            </div>
-          )}
-        </section>
-      )}
-
       {/* 区块 d: 全市场分析表格 (wallet or whitelist) */}
       {(!loginRequired) && (
       <section className="card p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <PieChart className="w-5 h-5 text-[#7ED7C4]" />
-            <h2 className="text-lg font-semibold text-white">{t('dashboard.fullMarketAnalysis')}</h2>
-          </div>
-          <VerificationBadge status={verificationStatus} />
+        <div className="flex items-center gap-2 mb-4">
+          <PieChart className="w-5 h-5 text-[#7ED7C4]" />
+          <h2 className="text-lg font-semibold text-white">{t('dashboard.fullMarketAnalysis')}</h2>
         </div>
         {loading ? (
           <div className="space-y-2">
@@ -1143,7 +766,7 @@ function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {allTokens.map((token: any) => (
+                {allTokens.map(token => (
                   <tr key={token.symbol} className="hover:bg-white/5 transition">
                     <td className="py-2.5 px-3 font-medium text-white">{token.symbol}</td>
                     <td className="py-2.5 px-3 text-right text-gray-300">${token.price?.toFixed(4) ?? '--'}</td>

@@ -41,24 +41,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const checkApi = useCallback(async () => {
     setApiStatus(prev => ({ ...prev, checking: true }));
-    let health = await checkHealth();
-
-    // Fallback: if external API fails and we're on localhost, try localhost:8000 directly
-    if (!health.online && window.location.hostname === 'localhost') {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3000);
-        const res = await fetch('http://localhost:8000/health', { method: 'GET', signal: controller.signal });
-        clearTimeout(timeoutId);
-        if (res.ok) {
-          const data = await res.json().catch(() => ({}));
-          health = { online: true, services: data.services };
-        }
-      } catch {
-        // ignore
-      }
-    }
-
+    const health = await checkHealth();
     setApiStatus({ online: health.online, services: health.services, checking: false });
     return health.online;
   }, []);

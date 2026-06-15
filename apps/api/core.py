@@ -70,7 +70,7 @@ RATE_LIMIT_WINDOW = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
 
 # IP Whitelist — comma-separated list from env, fallback to old default
 # DEBUG=true 时自动加入 localhost，方便本地开发测试
-_WHITELIST_ENV = os.getenv("IP_WHITELIST", "114.246.236.230,127.0.0.1,::1")
+_WHITELIST_ENV = os.getenv("IP_WHITELIST", "127.0.0.1,::1")
 WHITELIST = [ip.strip() for ip in _WHITELIST_ENV.split(",") if ip.strip()]
 # 始终允许本地访问
 for _local_ip in ("127.0.0.1", "localhost", "::1"):
@@ -333,11 +333,11 @@ async def log_requests(request, call_next):
     """Log all incoming requests and their responses with timing."""
     start = time.time()
     client_host = request.client.host if request.client else "unknown"
-    logger.info(f"→ {request.method} {request.url.path} from {client_host}")
+    logger.debug(f"→ {request.method} {request.url.path} from {client_host}")
     try:
         response = await call_next(request)
         duration = (time.time() - start) * 1000
-        logger.info(f"← {request.method} {request.url.path} {response.status_code} ({duration:.1f}ms)")
+        logger.debug(f"← {request.method} {request.url.path} {response.status_code} ({duration:.1f}ms)")
         return response
     except Exception as e:
         duration = (time.time() - start) * 1000

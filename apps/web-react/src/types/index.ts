@@ -33,14 +33,6 @@ export interface SentimentData {
   risk_warning?: string;
   signals?: any[];
   backtest_results?: Record<string, any>;
-  // Decision from position_report
-  decision?: {
-    symbol: string;
-    timeframe: string;
-    direction: string;
-    confidence: string;
-    reason: string;
-  };
 }
 
 export interface MantleSentimentData {
@@ -673,16 +665,4 @@ export interface ElliottWaveResult {
   cached_at?: string;
   is_cached?: boolean;
   computed_at?: string;
-}
-
-export interface OnChainSignalRecord {
-  id: number;
-  tx_hash: string;
-  block_number: number;
-  symbol: string;
-  timeframe: string;
-  data: string;
-  data_hash: string;
-  timestamp: number;
-  created_at: string;
 }

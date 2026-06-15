@@ -1,3 +1,6 @@
+import { useState, useCallback } from 'react'
+import CryptoJS from 'crypto-js'
+
 export interface DecryptedSignal {
   version?: string
   timestamp?: string
@@ -19,157 +22,99 @@ export interface DecryptedSignal {
       confidence?: number
       stop_loss?: number
     }>
-    score?: number
-    chart_hash?: string
-    chart_path?: string
   }
   backtest?: {
     win_rate?: number
     avg_pnl?: number
     profit_factor?: number
     total_signals?: number
-    duration_bucket?: string
-    current_signal?: {
-      pattern?: string
-      duration?: number
-      strength?: string
-      recommendation?: {
-        action?: string
-        score?: number
-      }
-    }
   }
   sentiment?: {
     sentiment_index?: number
     market_bias?: string
-    bias_strength?: string
-    fng_value?: number
-    fng_label?: string
-    bullish_count?: number
-    bearish_count?: number
-    neutral_count?: number
   }
-  position_report?: {
-    [timeframe: string]: {
-      long: Array<{ symbol: string; confidence: string; reason: string }>
-      short: Array<{ symbol: string; confidence: string; reason: string }>
-      watch: string
-    }
-  }
-  onchain_context?: {
-    mantle_tvl?: number
-    tvl_change_24h?: number
-    gas_gwei?: number
-    block_number?: number
-    protocol_count?: number
-  }
-  dashboard?: {
-    top_bullish: Array<{ symbol: string; score: number; price_change_24h: number }>
-    top_bearish: Array<{ symbol: string; score: number; price_change_24h: number }>
-  }
-
-  // 趋势图表数据
-  trends?: {
-    activity?: Array<{ t: string; v: number }>
-    gas?: Array<{ t: string; v: number }>
-    tvl?: Array<{ t: string; v: number }>
-  }
-
-  // 完整币种评分（前 10）
-  symbol_scores?: Array<{
-    symbol: string
-    score?: number
-    price?: number
-    change_24h?: number
-  }>
-
-  // 协议列表（前 5）
-  protocols?: Array<{
-    slug: string
-    name?: string
-    tvl?: number
-    tvl_change_1d?: number
-    category?: string
-  }>
-
-  // 概览完整字段
-  overview?: {
-    total_volume_24h?: number
-    total_fees_24h?: number
-    active_addresses?: number
-  }
-
-  // 区块详情
-  block?: {
-    number?: number
-    tx_count?: number
-    gas_used?: string
-    timestamp?: number
-  }
-
-  // Gas 详情
-  gas?: {
-    wei?: number
-    gwei?: number
-  }
-
-  // 网络详情
-  network?: {
-    latest_block?: number
-    avg_block_time?: number
-    tx_count?: number
-  }
-
-  // 风险警告
-  risk_warning?: string
-
-  // 完整数据哈希（用于验证 API 数据完整性）
-  full_data_hash?: string
-
   raw: string
 }
 
-export function parseSignalData(data: string): DecryptedSignal {
-  try {
-    const parsed = JSON.parse(data)
-    return {
-      version: parsed.version,
-      timestamp: parsed.timestamp,
-      agent_id: parsed.agent_id,
-      decision: parsed.decision || {
-        symbol: '',
-        timeframe: '',
-        direction: '',
-        confidence: '',
-        reason: '',
-      },
-      elliott_wave: parsed.elliott_wave || undefined,
-      backtest: parsed.backtest,
-      sentiment: parsed.sentiment,
-      position_report: parsed.position_report,
-      onchain_context: parsed.onchain_context,
-      dashboard: parsed.dashboard,
-      trends: parsed.trends,
-      symbol_scores: parsed.symbol_scores,
-      protocols: parsed.protocols,
-      overview: parsed.overview,
-      block: parsed.block,
-      gas: parsed.gas,
-      network: parsed.network,
-      risk_warning: parsed.risk_warning,
-      raw: data,
+export function useSignalDecrypt() {
+  const [decryptKey, setDecryptKey] = useState<string | null>(null)
+  const [fetchingKey, setFetchingKey] = useState(false)
+  const [fetchError, setFetchError] = useState<string | null>(null)
+
+  const fetchDecryptKey = useCallback(async (walletAddress: string) => {
+    setFetchingKey(true)
+    setFetchError(null)
+    try {
+      const response = await fetch(`/api/signals/decrypt-key?address=${walletAddress}`)
+      if (!response.ok) throw new Error('Failed to fetch decrypt key')
+      const data = await response.json()
+      if (data.key) {
+        setDecryptKey(data.key)
+        return data.key as string
+      }
+      throw new Error('No key in response')
+    } catch (err: any) {
+      setFetchError(err.message || 'Unknown error')
+      return null
+    } finally {
+      setFetchingKey(false)
     }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    return {
-      decision: {
-        symbol: '',
-        timeframe: '',
-        direction: '',
-        confidence: '',
-        reason: `Parse error: ${message}`,
-      },
-      raw: `Parse error: ${message}`,
+  }, [])
+
+  const decryptSignal = useCallback((encryptedData: string, key: string): DecryptedSignal => {
+    try {
+      const decrypted = CryptoJS.AES.decrypt(encryptedData, key)
+      const plaintext = decrypted.toString(CryptoJS.enc.Utf8)
+      if (!plaintext) throw new Error('Decryption failed')
+      try {
+        const parsed = JSON.parse(plaintext)
+        return {
+          version: parsed.version,
+          timestamp: parsed.timestamp,
+          agent_id: parsed.agent_id,
+          decision: parsed.decision || {
+            symbol: '',
+            timeframe: '',
+            direction: parsed.direction || '',
+            confidence: parsed.confidence || '',
+            reason: '',
+          },
+          elliott_wave: parsed.elliott_wave,
+          backtest: parsed.backtest,
+          sentiment: parsed.sentiment,
+          raw: plaintext,
+        }
+      } catch {
+        return {
+          decision: {
+            symbol: '',
+            timeframe: '',
+            direction: '',
+            confidence: '',
+            reason: plaintext,
+          },
+          raw: plaintext,
+        }
+      }
+    } catch (err: any) {
+      return {
+        decision: {
+          symbol: '',
+          timeframe: '',
+          direction: '',
+          confidence: '',
+          reason: `Decryption error: ${err.message}`,
+        },
+        raw: `Decryption error: ${err.message}`,
+      }
     }
+  }, [])
+
+  return {
+    decryptKey,
+    fetchingKey,
+    fetchError,
+    fetchDecryptKey,
+    decryptSignal,
   }
 }

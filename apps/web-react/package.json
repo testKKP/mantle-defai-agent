@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "mkdir -p src/abi && cp ../api/abi/MantleDeFAIRegistry.json src/abi/MantleDeFAIRegistry.json",
     "dev": "vite",
+    "prebuild": "mkdir -p src/abi && cp ../api/abi/MantleDeFAIRegistry.json src/abi/MantleDeFAIRegistry.json",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"

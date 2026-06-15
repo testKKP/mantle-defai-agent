@@ -1702,7 +1702,7 @@ class SentimentAnalyzer:
             }
             await cache.set("sentiment", timeframe, limit, data=full_result)
             try:
-                await db_set("sentiment", full_result, ttl_seconds=900)
+                await db_set("sentiment", full_result, ttl_seconds=15000)
                 logger.info("[Background] Full sentiment persisted to DB")
             except Exception as db_err:
                 logger.warning(f"Failed to persist sentiment to DB: {db_err}")

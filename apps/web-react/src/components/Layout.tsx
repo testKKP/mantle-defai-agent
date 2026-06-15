@@ -11,13 +11,14 @@ import {
   BarChart3,
   Layers,
   Globe,
+  RefreshCw,
   Wallet,
   TrendingUp,
   Radio,
 } from 'lucide-react';
 
 export default function Layout({ children }: { children: React.ReactNode }) {
-  const { apiStatus, lastRefresh } = useApp();
+  const { apiStatus, loading, lastRefresh, refresh } = useApp();
   const wallet = useWallet();
   const [showWalletModal, setShowWalletModal] = useState(false);
   const { t } = useTranslation();
@@ -72,6 +73,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </span>
             </div>
 
+            {/* Refresh */}
+            <button
+              onClick={refresh}
+              disabled={loading}
+              className="p-2 rounded-lg hover:bg-white/5 transition disabled:opacity-50"
+              title={t('layout.refreshData')}
+            >
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
 
             {/* Wallet Button */}
             {wallet.connected ? (

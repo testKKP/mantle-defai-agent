@@ -4,12 +4,10 @@ Background refresh tasks and on-chain data trend helpers.
 
 import asyncio
 import aiohttp
-import base64
-import hashlib
 import json
 import os
-from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Optional, Any
+from datetime import datetime, timedelta, timezone, time
+from typing import List, Dict, Optional, Any, Set
 from loguru import logger
 from fastapi import HTTPException
 
@@ -17,7 +15,7 @@ from fastapi import HTTPException
 from onchain_collector import OnChainDataCollector, DataRefreshScheduler
 from defillama_client import DeFiLlamaClient
 from data_aggregator import DataAggregator, AggregatorScheduler, create_aggregator
-from db import db_set, db_get, db_get_elliott_wave, db_save_onchain_signal
+from db import db_set, db_get_elliott_wave
 from backtest import _enrich_with_backtest
 
 # Internal imports
@@ -25,11 +23,8 @@ from core import sanitize_for_json
 from clients import analyzer, onchain_collector, llama_client, MantleProvider
 import state
 from state import data_aggregator, aggregator_scheduler
-from crypto_utils import hash_signal
-from contract_client import registry, w3
-
-# Module-level counter for signal submission throttling (every 4 cycles = 60 min)
-_signal_submit_counter = 3  # Submit on next refresh (immediate)
+from crypto_utils import encrypt_signal, hash_signal, pack_encrypted_signal
+from contract_client import registry
 
 # ============ Unified Background Refresh ============
 
@@ -46,17 +41,14 @@ async def _run_unified_refresh():
             try:
                 sentiment = await analyzer.analyze()
                 sentiment = await _enrich_with_backtest(sentiment, "1d")
-                await db_set("sentiment", sentiment, ttl_seconds=3960)
+                await db_set("sentiment", sentiment, ttl_seconds=15000)
                 logger.info("[UnifiedRefresh] Sentiment refreshed")
 
-                # Submit high-confidence encrypted signals to on-chain registry (hourly)
-                global _signal_submit_counter
-                _signal_submit_counter += 1
-                if _signal_submit_counter % 4 == 0:
-                    try:
-                        await _submit_signals_to_registry(sentiment)
-                    except Exception as e:
-                        logger.warning(f"[UnifiedRefresh] On-chain signal submission failed: {e}")
+                # Submit high-confidence encrypted signals to on-chain registry
+                try:
+                    await _submit_signals_to_registry(sentiment)
+                except Exception as e:
+                    logger.warning(f"[UnifiedRefresh] On-chain signal submission failed: {e}")
             except Exception as e:
                 logger.warning(f"[UnifiedRefresh] Sentiment failed: {e}")
 
@@ -166,32 +158,19 @@ async def _run_unified_refresh():
             except Exception as e:
                 logger.warning(f"[UnifiedRefresh] TVL history failed: {e}")
 
-            logger.info("[UnifiedRefresh] Full refresh complete. Sleeping 1 hour...")
+            logger.info("[UnifiedRefresh] Full refresh complete. Sleeping 4 hours...")
         except Exception as e:
             logger.error(f"[UnifiedRefresh] Unexpected error: {e}")
 
-        # Sleep for 1 hour or until stopped
-        for _ in range(3600):
+        # Sleep for 4 hours or until stopped
+        for _ in range(14400):
             if not state._unified_refresh_running:
                 break
             await asyncio.sleep(1)
 
 
-async def _get_block_with_retry(w3, block_number: int, retries: int = 5, delay: float = 2.0):
-    """Fetch a block by number with retries to handle RPC load-balancer transient failures."""
-    for attempt in range(retries):
-        try:
-            return await asyncio.to_thread(w3.eth.get_block, block_number)
-        except Exception as e:
-            if attempt < retries - 1:
-                logger.warning(f"[RegistrySubmission] get_block attempt {attempt + 1} failed: {e}, retrying...")
-                await asyncio.sleep(delay)
-            else:
-                raise
-
-
 async def _submit_signals_to_registry(sentiment: dict):
-    """Extract medium/high-confidence signals and submit plaintext batch to on-chain registry."""
+    """Extract medium/high-confidence signals and submit encrypted batch to on-chain registry."""
     if not registry.configured:
         logger.debug("[RegistrySubmission] Registry not configured, skipping")
         return
@@ -199,79 +178,6 @@ async def _submit_signals_to_registry(sentiment: dict):
     position_report = sentiment.get("position_report", {})
     backtest_results = sentiment.get("backtest_results", {})
     signals_to_submit = []
-
-    # Fetch on-chain context from DB cache
-    onchain_overview = None
-    onchain_block = None
-    onchain_gas = None
-    onchain_network = None
-    try:
-        onchain_overview = await db_get("onchain_overview")
-    except Exception:
-        pass
-    try:
-        onchain_block = await db_get("onchain_block")
-    except Exception:
-        pass
-    try:
-        onchain_gas = await db_get("onchain_gas")
-    except Exception:
-        pass
-    try:
-        onchain_network = await db_get("onchain_network")
-    except Exception:
-        pass
-    # Build onchain context
-    overview = onchain_overview if onchain_overview and isinstance(onchain_overview, dict) else None
-    gas_data = onchain_gas if onchain_gas and isinstance(onchain_gas, dict) else None
-    block_data = onchain_block if onchain_block and isinstance(onchain_block, dict) else None
-    protocol_data = onchain_network if onchain_network and isinstance(onchain_network, dict) else None
-
-    mantle_tvl = None
-    if overview:
-        mantle_tvl = overview.get("total_tvl") or overview.get("tvl")
-    if mantle_tvl is None:
-        try:
-            onchain_tvl = await db_get("onchain_tvl")
-            if onchain_tvl and isinstance(onchain_tvl, dict):
-                mantle_tvl = onchain_tvl.get("tvl")
-        except Exception:
-            pass
-
-    onchain_context = {
-        "mantle_tvl": mantle_tvl,
-        "tvl_change_24h": overview.get("tvl_change_24h") if overview else None,
-        "gas_gwei": gas_data.get("gwei") if gas_data else None,
-        "block_number": block_data.get("number") if block_data else None,
-        "protocol_count": protocol_data.get("count") if protocol_data else None,
-    }
-    onchain_context = {k: v for k, v in onchain_context.items() if v is not None}
-    if not onchain_context:
-        onchain_context = None
-
-    # Build position report summary (counts only, not full signal lists)
-    position_report_payload = {}
-    for tf in ["1d", "4h", "1w"]:
-        report = position_report.get(tf, {})
-        tf_summary = {}
-        if report.get("long"):
-            tf_summary["long_count"] = len(report["long"])
-        if report.get("short"):
-            tf_summary["short_count"] = len(report["short"])
-        if report.get("watch"):
-            tf_summary["watch"] = report["watch"]
-        if tf_summary:
-            position_report_payload[tf] = tf_summary
-    if not position_report_payload:
-        position_report_payload = None
-
-    # Compute full_data_hash from complete sentiment data (consistent with frontend)
-    try:
-        clean_sentiment = {k: v for k, v in sentiment.items() if not k.startswith('_')}
-        full_data_str = json.dumps(clean_sentiment, ensure_ascii=False, default=str)
-        full_data_hash = hashlib.sha256(full_data_str.encode('utf-8')).hexdigest()
-    except Exception:
-        full_data_hash = None
 
     for timeframe in ("1d", "4h", "1w"):
         tf_report = position_report.get(timeframe, {})
@@ -295,31 +201,20 @@ async def _submit_signals_to_registry(sentiment: dict):
                 if ew_data and isinstance(ew_data.get("candidates"), list) and ew_data["candidates"]:
                     ew_candidate = ew_data["candidates"][0]
 
-                # Read chart file, compute sha256 hash, do not embed base64
-                chart_hash = None
-                chart_path = None
-                if ew_data and isinstance(ew_data, dict):
-                    chart_paths = ew_data.get("chart_paths", [])
-                    if chart_paths and len(chart_paths) > 0:
-                        chart_path_val = chart_paths[0]
-                        chart_filename = os.path.basename(chart_path_val)
-                        full_path = os.path.join(
-                            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "tests", "screenshots", chart_filename
-                        )
-                        if os.path.exists(full_path):
-                            try:
-                                import hashlib
-                                with open(full_path, "rb") as f:
-                                    file_content = f.read()
-                                    chart_hash = hashlib.sha256(file_content).hexdigest()
-                                chart_path = chart_path_val
-                            except Exception:
-                                pass
-
                 # Build Elliott Wave section (skip if no valid candidate)
                 elliott_wave = None
                 if ew_candidate and isinstance(ew_candidate, dict):
+                    projections = []
+                    if isinstance(ew_candidate.get("projections"), list):
+                        for proj in ew_candidate["projections"]:
+                            if isinstance(proj, dict):
+                                projections.append({
+                                    "scenario": proj.get("scenario"),
+                                    "target_price": proj.get("target_price"),
+                                    "confidence": proj.get("confidence"),
+                                    "stop_loss": proj.get("stop_loss"),
+                                })
+
                     overall_confidence = None
                     if ew_data and isinstance(ew_data, dict):
                         kimi_analysis = ew_data.get("kimi_analysis")
@@ -332,17 +227,13 @@ async def _submit_signals_to_registry(sentiment: dict):
                         "wave_pattern": ew_candidate.get("wave_pattern"),
                         "current_wave": ew_candidate.get("current_wave"),
                         "direction": ew_candidate.get("direction"),
-                        "score": overall_confidence,
+                        "projections": projections if projections else None,
                     }
-                    if chart_hash:
-                        elliott_wave["chart_hash"] = chart_hash
-                    if chart_path:
-                        elliott_wave["chart_path"] = chart_path
                     elliott_wave = {k: v for k, v in elliott_wave.items() if v is not None}
                     if not elliott_wave:
                         elliott_wave = None
 
-                # Build compact Backtest section
+                # Build Backtest section
                 bt_key = f"{symbol.replace('USDT', '').upper()}_{timeframe}"
                 bt_result = backtest_results.get(bt_key, {})
                 backtest = None
@@ -360,27 +251,18 @@ async def _submit_signals_to_registry(sentiment: dict):
                             backtest = None
 
                 # Build Sentiment section
-                fng_data = sentiment.get("fng")
-                if not isinstance(fng_data, dict):
-                    fng_data = {}
                 sentiment_section = {
                     "sentiment_index": sentiment.get("sentiment_index"),
                     "market_bias": sentiment.get("market_bias"),
-                    "bias_strength": sentiment.get("bias_strength"),
-                    "fng_value": fng_data.get("value"),
-                    "fng_label": fng_data.get("value_classification"),
-                    "bullish_count": sentiment.get("bullish_count"),
-                    "bearish_count": sentiment.get("bearish_count"),
-                    "neutral_count": sentiment.get("neutral_count"),
                 }
                 sentiment_section = {k: v for k, v in sentiment_section.items() if v is not None}
                 if not sentiment_section:
                     sentiment_section = None
 
                 payload = {
-                    "version": "2.1",
+                    "version": "2.0",
                     "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "agent_id": "mantle-defai-agent-v2.1",
+                    "agent_id": "mantle-defai-agent-v2.0",
                     "decision": {
                         "symbol": symbol,
                         "timeframe": timeframe,
@@ -395,23 +277,16 @@ async def _submit_signals_to_registry(sentiment: dict):
                     payload["backtest"] = backtest
                 if sentiment_section:
                     payload["sentiment"] = sentiment_section
-                if position_report_payload:
-                    payload["position_report"] = position_report_payload
-                if onchain_context:
-                    payload["onchain_context"] = onchain_context
-                if full_data_hash:
-                    payload["full_data_hash"] = full_data_hash
 
-                # Payload size check
                 plaintext = json.dumps(payload)
-                logger.info(f"[RegistrySubmission] Payload size: {len(plaintext)} bytes")
-
                 data_hash = hash_signal(plaintext)
+                ciphertext, nonce = encrypt_signal(plaintext)
+                encrypted_data = pack_encrypted_signal(ciphertext, nonce)
 
                 signals_to_submit.append({
                     "symbol": symbol,
                     "timeframe": timeframe,
-                    "data": plaintext,
+                    "encrypted_data": encrypted_data,
                     "data_hash": data_hash,
                 })
 
@@ -423,35 +298,7 @@ async def _submit_signals_to_registry(sentiment: dict):
     tx_hash = await asyncio.to_thread(registry.submit_signals_batch, signals_to_submit)
     if tx_hash:
         logger.info(f"[RegistrySubmission] Submitted {len(signals_to_submit)} signals, tx: {tx_hash}")
-        logger.info(f"[RegistrySubmission] Payload summary: {len(signals_to_submit)} signals, version 2.1")
-        # Wait for receipt and persist to DB
-        try:
-            receipt = await asyncio.to_thread(
-                w3.eth.wait_for_transaction_receipt, tx_hash, timeout=60
-            )
-            block_number = receipt.blockNumber
-            try:
-                block = await _get_block_with_retry(w3, block_number)
-                block_timestamp = int(block.timestamp)
-            except Exception as e:
-                logger.error(f"[RegistrySubmission] Failed to get block after retries, using UTC fallback: {e}")
-                block_timestamp = int(datetime.utcnow().replace(tzinfo=timezone.utc).timestamp())
-
-            for sig in signals_to_submit:
-                await db_save_onchain_signal(
-                    tx_hash=tx_hash,
-                    block_number=block_number,
-                    symbol=sig["symbol"],
-                    timeframe=sig["timeframe"],
-                    data=sig["data"],
-                    data_hash=sig["data_hash"],
-                    timestamp=block_timestamp,
-                )
-            logger.info(
-                f"[RegistrySubmission] Saved {len(signals_to_submit)} signals to DB (block #{block_number})"
-            )
-        except Exception as e:
-            logger.error(f"[RegistrySubmission] Failed to persist submission records: {e}")
+        logger.info(f"[RegistrySubmission] Payload summary: {len(signals_to_submit)} signals, version 2.0")
     else:
         logger.warning("[RegistrySubmission] Batch submission returned no tx hash")
 
@@ -600,7 +447,7 @@ async def _run_elliott_wave_scheduler():
     """
     global _ew_scheduler_running
     _ew_scheduler_running = True
-    logger.info("Elliott Wave scheduler started (interval: 3600s)")
+    logger.info("Elliott Wave scheduler started (interval: 14400s, ttl: 15000s)")
 
     while _ew_scheduler_running:
         try:
@@ -608,8 +455,8 @@ async def _run_elliott_wave_scheduler():
         except Exception as e:
             logger.error(f"Elliott Wave scheduler error: {e}")
 
-        # 等待 1 小时，支持优雅停止（每秒检查一次）
-        for _ in range(3600):
+        # 等待 4 小时，支持优雅停止（每秒检查一次）
+        for _ in range(14400):
             if not _ew_scheduler_running:
                 break
             await asyncio.sleep(1)
@@ -637,6 +484,98 @@ async def _run_elliott_wave_scheduler_with_restart():
             await asyncio.sleep(30)
 
 
+# Global flag for Elliott Wave cleanup scheduler lifecycle
+_ew_cleanup_scheduler_running = False
+
+async def _run_elliott_wave_screenshot_cleanup():
+    """每天早上 8 点（北京时间 / UTC 00:00）清理前天的 Elliott Wave 截图。"""
+    import os
+    import re
+    from datetime import datetime, timezone
+    from db import db_cleanup_expired_elliott_waves
+
+    screenshots_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "tests", "screenshots"
+    )
+    # 防御性创建目录：如果目录不存在则创建，而不是直接退出
+    os.makedirs(screenshots_dir, exist_ok=True)
+
+    # 1. 清理数据库过期记录
+    try:
+        db_removed = await db_cleanup_expired_elliott_waves()
+    except Exception as e:
+        logger.error(f"Elliott Wave cleanup: failed to cleanup expired DB entries: {e}")
+        db_removed = 0
+
+    # 2. 计算"今天"的 UTC 日期
+    today = datetime.now(timezone.utc).date()
+
+    # 3. 扫描并删除前天及更早的 ew_*.png（严格只删除文件，不碰目录）
+    removed = 0
+    removed_files: List[str] = []
+    pattern = re.compile(r"^ew_[A-Z0-9]+_(?:1d|4h|1w)_(\d{8})_\d{6}(?:_raw|_kimi)?\.png$")
+
+    for filename in os.listdir(screenshots_dir):
+        if not filename.startswith("ew_") or not filename.endswith(".png"):
+            continue
+        m = pattern.match(filename)
+        if not m:
+            continue
+        file_path = os.path.join(screenshots_dir, filename)
+        if not os.path.isfile(file_path):
+            # 安全防御：只处理常规文件，绝不删除目录
+            logger.warning(f"Elliott Wave cleanup: skipped non-file entry {filename}")
+            continue
+        file_date = datetime.strptime(m.group(1), "%Y%m%d").date()
+        if file_date < today:  # 只删今天之前的
+            try:
+                os.remove(file_path)
+                removed += 1
+                removed_files.append(filename)
+                logger.info(f"Elliott Wave cleanup: removed {filename}")
+            except Exception as e:
+                logger.warning(f"Elliott Wave cleanup: failed to remove {filename}: {e}")
+
+    if removed > 0:
+        logger.info(f"Elliott Wave daily cleanup complete: removed {removed} files ({', '.join(removed_files)}), {db_removed} DB rows")
+    else:
+        logger.info(f"Elliott Wave daily cleanup complete: removed 0 files, {db_removed} DB rows")
+
+
+async def _run_elliott_wave_cleanup_scheduler():
+    """每天 UTC 00:00（北京时间 08:00）执行一次清理。"""
+    global _ew_cleanup_scheduler_running
+    _ew_cleanup_scheduler_running = True
+    logger.info("Elliott Wave cleanup scheduler started (daily at 00:00 UTC / 08:00 CST)")
+
+    while _ew_cleanup_scheduler_running:
+        now = datetime.now(timezone.utc)
+        # 计算下一个 UTC 00:00
+        next_run = datetime.combine(now.date(), time(0, 0), tzinfo=timezone.utc)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        wait_seconds = (next_run - now).total_seconds()
+
+        logger.info(f"Elliott Wave cleanup: next run at {next_run.isoformat()}, waiting {wait_seconds:.0f}s")
+
+        # 等待到下次执行时间，每秒检查停止标志
+        for _ in range(int(wait_seconds)):
+            if not _ew_cleanup_scheduler_running:
+                break
+            await asyncio.sleep(1)
+
+        if not _ew_cleanup_scheduler_running:
+            break
+
+        try:
+            await _run_elliott_wave_screenshot_cleanup()
+        except Exception as e:
+            logger.error(f"Elliott Wave cleanup scheduler error: {e}")
+
+    logger.info("Elliott Wave cleanup scheduler stopped gracefully")
+
+
 async def _compute_elliott_waves_for_recommended():
     """从 sentiment position_report 获取推荐币种，计算波浪并存入缓存。"""
     import os
@@ -653,103 +592,136 @@ async def _compute_elliott_waves_for_recommended():
         return
 
     position_report = sentiment_data.get("position_report", {})
+    daily_report = position_report.get("1d", {})
+    long_signals = daily_report.get("long", [])
 
-    for tf in ["1d", "4h", "1w"]:
-        daily_report = position_report.get(tf, {})
-        long_signals = daily_report.get("long", [])
-        short_signals = daily_report.get("short", [])
+    # 提取 symbol，去重
+    symbols = set()
+    for s in long_signals:
+        sym = s.get("symbol", "")
+        if sym:
+            symbols.add(sym.upper().replace("USDT", ""))
 
-        # 提取 symbol，去重
-        symbols = set()
-        for s in long_signals + short_signals:
-            sym = s.get("symbol", "")
-            if sym:
-                symbols.add(sym.upper().replace("USDT", ""))
+    symbols = list(symbols)[:10]  # 最多处理 10 个
+    if not symbols:
+        logger.info("Elliott Wave: no recommended symbols to analyze")
+        return
 
-        symbols = list(symbols)[:30]  # 最多处理 30 个
-        if not symbols:
-            logger.info(f"Elliott Wave: [{tf}] no recommended symbols to analyze")
-            continue
+    logger.info(f"Elliott Wave: analyzing {len(symbols)} symbols: {symbols}")
 
-        logger.info(f"Elliott Wave: [{tf}] analyzing {len(symbols)} symbols: {symbols}")
+    tf = "1d"
 
-        # 2. 逐个计算
-        for symbol in symbols:
-            try:
-                async with BinanceClient() as client:
-                    klines = await client.get_klines(f"{symbol}USDT", tf, 500)
-                if not klines or len(klines) < 50:
-                    logger.warning(f"Elliott Wave: [{tf}] insufficient klines for {symbol}")
-                    continue
+    # 2. 逐个计算
+    for symbol in symbols:
+        try:
+            async with BinanceClient() as client:
+                klines = await client.get_klines(f"{symbol}USDT", tf, 200)
+            if not klines or len(klines) < 50:
+                logger.warning(f"Elliott Wave: insufficient klines for {symbol}")
+                continue
 
-                analyzer = ElliottWaveAnalyzer(deviation=0.10, min_span_ratio=0.15)
-                candidates = analyzer.analyze(klines, top_n=3)
+            analyzer = ElliottWaveAnalyzer(deviation=0.10, min_span_ratio=0.10)
+            candidates = analyzer.analyze(klines, top_n=3)
 
-                # 生成图表
-                chart_paths = []
-                timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                screenshots_dir = os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                    "tests", "screenshots"
-                )
-                os.makedirs(screenshots_dir, exist_ok=True)
+            # 生成图表
+            chart_paths = []
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            screenshots_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "tests", "screenshots"
+            )
+            os.makedirs(screenshots_dir, exist_ok=True)
 
-                # 只给最高分 candidate 生成一张统一图
-                kimi_result = None
-                if candidates:
-                    candidate = candidates[0]
-                    # 生成走势预测数据（基于波浪结构直接计算，不依赖AI）
-                    projections = []
-                    last_price = float(klines[-1]["close"])
-                    wave_direction = candidate.get("direction", "up")
-                    waves = candidate.get("waves", [])
+            # 只给最高分 candidate 生成一张统一图
+            kimi_result = None
+            if candidates:
+                candidate = candidates[0]
+                # 生成走势预测数据（基于波浪结构直接计算，不依赖AI）
+                projections = []
+                last_price = float(klines[-1]["close"])
+                wave_direction = candidate.get("direction", "up")
+                waves = candidate.get("waves", [])
 
-                    if waves and len(waves) >= 2:
-                        avg_wave_size = sum(abs(w["end_price"] - w["start_price"]) for w in waves) / len(waves)
-                        if wave_direction == "up":
-                            projections = [
-                                {"scenario": "bullish", "description": "Extension", "target_price": round(last_price + avg_wave_size * 1.618, 2)},
-                                {"scenario": "bearish", "description": "Correction", "target_price": round(last_price - avg_wave_size * 0.618, 2)},
-                                {"scenario": "neutral", "description": "Consolidation", "target_price": round(last_price, 2)},
-                            ]
-                        else:
-                            projections = [
-                                {"scenario": "bearish", "description": "Extension", "target_price": round(last_price - avg_wave_size * 1.618, 2)},
-                                {"scenario": "bullish", "description": "Bounce", "target_price": round(last_price + avg_wave_size * 0.618, 2)},
-                                {"scenario": "neutral", "description": "Consolidation", "target_price": round(last_price, 2)},
-                            ]
+                if waves and len(waves) >= 2:
+                    avg_wave_size = sum(abs(w["end_price"] - w["start_price"]) for w in waves) / len(waves)
+                    if wave_direction == "up":
+                        projections = [
+                            {"scenario": "bullish", "description": "Extension", "target_price": round(last_price + avg_wave_size * 1.618, 2)},
+                            {"scenario": "bearish", "description": "Correction", "target_price": round(last_price - avg_wave_size * 0.618, 2)},
+                            {"scenario": "neutral", "description": "Consolidation", "target_price": round(last_price, 2)},
+                        ]
+                    else:
+                        projections = [
+                            {"scenario": "bearish", "description": "Extension", "target_price": round(last_price - avg_wave_size * 1.618, 2)},
+                            {"scenario": "bullish", "description": "Bounce", "target_price": round(last_price + avg_wave_size * 0.618, 2)},
+                            {"scenario": "neutral", "description": "Consolidation", "target_price": round(last_price, 2)},
+                        ]
 
-                    chart_filename = f"ew_{symbol}_{tf}_{timestamp}.png"
-                    chart_path = os.path.join(screenshots_dir, chart_filename)
-                    from chart_generator import plot_elliott_wave_unified
-                    plot_elliott_wave_unified(klines, candidate, projections, f"{symbol}USDT", tf, chart_path)
-                    candidate["chart_path"] = f"/screenshots/{chart_filename}"
-                    chart_paths.append(f"/screenshots/{chart_filename}")
+                chart_filename = f"ew_{symbol}_{tf}_{timestamp}.png"
+                chart_path = os.path.join(screenshots_dir, chart_filename)
+                from chart_generator import plot_elliott_wave_unified
+                plot_elliott_wave_unified(klines, candidate, projections, f"{symbol}USDT", tf, chart_path)
+                candidate["chart_path"] = f"/screenshots/{chart_filename}"
+                chart_paths.append(f"/screenshots/{chart_filename}")
 
-                    if projections:
-                        candidate["projections"] = projections
-                        candidate["projection_chart_path"] = f"/screenshots/{chart_filename}"  # 向后兼容，指向统一图
+                if projections:
+                    candidate["projections"] = projections
+                    candidate["projection_chart_path"] = f"/screenshots/{chart_filename}"  # 向后兼容，指向统一图
 
-                    # === 调用 Kimi CLI 进行视觉分析 ===
-                    try:
+                # === 调用 Kimi CLI 进行分析 ===
+                try:
+                    from kimi_vision import analyze_elliott_wave_with_kimi, analyze_elliott_wave_text_only
+                    kimi_result = None
+                    kimi_structure = None
+
+                    if symbol in ("BTC", "ETH"):
+                        # Visual mode for top-tier assets: generate raw chart first
                         raw_chart_filename = f"ew_{symbol}_{tf}_{timestamp}_raw.png"
                         raw_chart_path = os.path.join(screenshots_dir, raw_chart_filename)
                         from chart_generator import plot_raw_candlestick
-                        plot_raw_candlestick(klines, f"{symbol}USDT", tf, raw_chart_path)
+                        plot_raw_candlestick(klines, f"{symbol}USDT", tf, raw_chart_path, pivots=candidate.get("zigzag_pivots"))
 
-                        from kimi_vision import analyze_elliott_wave_with_kimi
-                        kimi_result = await asyncio.wait_for(
-                            analyze_elliott_wave_with_kimi(
-                                chart_path=raw_chart_path,
-                                symbol=symbol,
-                                timeframe=tf,
-                                wave_candidate=candidate,
-                            ),
-                            timeout=90,
+                        try:
+                            kimi_result = await asyncio.wait_for(
+                                analyze_elliott_wave_with_kimi(
+                                    chart_path=raw_chart_path,
+                                    symbol=symbol,
+                                    timeframe=tf,
+                                    wave_candidate=candidate,
+                                ),
+                                timeout=150,
+                            )
+                            if kimi_result and not kimi_result.get("error"):
+                                kimi_structure = kimi_result.get("kimi_structure")
+                        except asyncio.TimeoutError:
+                            logger.warning(f"Elliott Wave: [{tf}] Kimi visual analysis timed out for {symbol}, using algorithm result")
+                        except Exception as e:
+                            logger.error(f"Elliott Wave: [{tf}] Kimi visual analysis failed for {symbol}: {e}")
+                    else:
+                        # Text-only fast mode for altcoins
+                        try:
+                            kimi_result = await asyncio.wait_for(
+                                analyze_elliott_wave_text_only(
+                                    candidate=candidate,
+                                    symbol=symbol,
+                                    timeframe=tf,
+                                ),
+                                timeout=60,
+                            )
+                            if kimi_result and not kimi_result.get("error"):
+                                kimi_structure = kimi_result.get("kimi_structure")
+                        except asyncio.TimeoutError:
+                            logger.warning(f"Elliott Wave: [{tf}] Kimi text analysis timed out for {symbol}, using algorithm result")
+                        except Exception as e:
+                            logger.error(f"Elliott Wave: [{tf}] Kimi text analysis failed for {symbol}: {e}")
+
+                    if kimi_result and kimi_result.get("error"):
+                        logger.warning(
+                            f"Elliott Wave: Kimi analysis failed for {symbol}: "
+                            f"{kimi_result.get('error')}, using algorithm result"
                         )
-
+                    else:
                         # 如果 Kimi 返回有效浪型结构（waves >= 2），替换算法结果
-                        kimi_structure = kimi_result.get("kimi_structure") if kimi_result else None
                         if kimi_structure and len(kimi_structure.get("waves", [])) >= 2:
                             candidate["waves"] = kimi_structure["waves"]
                             candidate["wave_pattern"] = kimi_structure.get("wave_pattern", candidate.get("wave_pattern"))
@@ -765,27 +737,46 @@ async def _compute_elliott_waves_for_recommended():
                             candidate["chart_path"] = f"/screenshots/{kimi_chart_filename}"
                             chart_paths = [f"/screenshots/{kimi_chart_filename}"]
 
+                            if symbol in ("BTC", "ETH"):
+                                logger.info(f"Elliott Wave: [visual] generated Kimi annotated chart for {symbol}: {kimi_chart_filename}")
+                            else:
+                                logger.info(f"Elliott Wave: [text] generated Kimi annotated chart for {symbol}: {kimi_chart_filename}")
+
                             # 如果 Kimi 有 projections，使用 Kimi 的
                             if kimi_result.get("projections"):
                                 candidate["projections"] = kimi_result["projections"]
                                 candidate["projection_chart_path"] = f"/screenshots/{kimi_chart_filename}"
 
-                    except asyncio.TimeoutError:
-                        logger.warning(f"Elliott Wave: [{tf}] Kimi analysis timed out for {symbol}, using algorithm result")
-                    except Exception as e:
-                        logger.error(f"Elliott Wave: [{tf}] Kimi analysis failed for {symbol}: {e}")
+                    # 附加完整 Kimi 分析并重新生成带支撑阻力的统一图
+                    if kimi_result:
+                        candidate["kimi_analysis"] = kimi_result
+                        try:
+                            plot_elliott_wave_unified(
+                                klines,
+                                candidate,
+                                candidate.get("projections", projections),
+                                f"{symbol}USDT",
+                                tf,
+                                chart_path,
+                            )
+                        except Exception as plot_err:
+                            logger.warning(
+                                f"Elliott Wave: failed to regenerate unified chart with Kimi SR for {symbol}: {plot_err}"
+                            )
 
-                # 保存到数据库
-                await db_save_elliott_wave(
-                    symbol=symbol,
-                    timeframe=tf,
-                    candidates=candidates,
-                    chart_paths=chart_paths,
-                    klines_count=len(klines),
-                    kimi_analysis=kimi_result,
-                    ttl=86400,
-                )
-                logger.info(f"Elliott Wave: [{tf}] saved cache for {symbol}")
+                except Exception as e:
+                    logger.error(f"Elliott Wave: unexpected error during Kimi analysis for {symbol}: {e}")
 
-            except Exception as e:
-                logger.error(f"Elliott Wave: [{tf}] failed to analyze {symbol}: {e}")
+            # 保存到数据库
+            await db_save_elliott_wave(
+                symbol=symbol,
+                timeframe=tf,
+                candidates=candidates,
+                chart_paths=chart_paths,
+                klines_count=len(klines),
+                kimi_analysis=kimi_result,
+            )
+            logger.info(f"Elliott Wave: saved cache for {symbol}")
+
+        except Exception as e:
+            logger.error(f"Elliott Wave: failed to analyze {symbol}: {e}")

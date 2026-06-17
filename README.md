@@ -1,36 +1,82 @@
-# Mantle DeFAI Agent — 生产级应用
+# Mantle DeFAI Agent — Production-Grade Application
 
-## 项目定位
-Mantle 生态的自主 AI Agent for DeFi on Mantle，融合市场情绪分析 + 最佳变现路由 + Mantle 链上数据。
+## Project Overview
+An autonomous AI Agent for DeFi on the Mantle ecosystem, combining market sentiment analysis, optimal swap routing, and Mantle on-chain data.
 
-## 核心功能模块
+## Core Modules
 
-### 1. 市场情绪分析引擎 (生产就绪)
-- 数据源：币安 API（交易量前50币种）
-- 指标：5线顺上/顺下检测（MA5 > MA10 > MA20 > MA60 > MA120）
-- 输出：市场情绪评分 (0-100) + 币种列表
-- 缓存：5分钟 TTL，减少 API 调用
+### 1. Market Sentiment Analysis Engine (Production-Ready)
+- **Data source:** Binance API (top 50 trading-volume tokens)
+- **Indicator:** 5-MA alignment detection (`MA5 > MA10 > MA20 > MA60 > MA120`)
+- **Output:** Market sentiment score (0–100) + token list
+- **Caching:** 5-minute TTL to reduce API calls
 
-### 2. Mantle 链上数据 (生产就绪)
-- 实时区块数据查询
-- Gas 价格监控
-- 网络活跃度分析
-- 多 RPC 故障转移
+### 2. Mantle On-Chain Data (Production-Ready)
+- Real-time block data queries
+- Gas price monitoring
+- Network activity analysis
+- Multi-RPC failover
 
-### 3. DEX 报价查询 (基础版)
-- 接入 Merchant Moe LBQuoter 合约
-- 支持 MNT/USDC/USDT 等主流代币
-- 自动降级到模拟数据（RPC 不可用时）
+### 3. DEX Quote Engine (Basic)
+- Integrates Merchant Moe `LBQuoter` contract
+- Supports mainstream tokens such as MNT/USDC/USDT
+- Automatic fallback to simulated data when RPC is unavailable
 
-## 技术栈
-- 后端：FastAPI + Python 3.11
-- 前端：React + Vite + TypeScript + Tailwind CSS
-- 链上交互：Web3.py / ethers.js + wagmi
-- 数据抓取：币安 API + Mantle RPC
+### 4. On-Chain Signal Registry
+The backend automatically generates trading signals every 4 hours.
 
-## 快速开始
+- Signals are encrypted with AES before submission
+- Submitted in batch via `submitSignalsBatch` to the Mantle Sepolia registry contract
+- **Registry contract address:** `0xf13CF1217A687e1B4e464BC72AEb40567A7Beb7d`
+- Signal structure:
+  - `encryptedData` (`bytes`) — AES-encrypted payload
+  - `dataHash` (`bytes32`) — integrity hash
+  - `timestamp` — signal generation time
+  - `submitter` — address that submitted the signal
+- Only on-chain subscribers can read and decrypt signals
 
-### 本地开发
+## Subscription Mechanism
+
+- Users pay **MNT** to the registry contract to activate a subscription
+- Subscription **price** and **duration** are configurable by the contract owner
+- Only active subscribers can call:
+  - `getLatestSignal`
+  - `getSignal`
+  - `getSignals`
+- Non-subscribers receive the `NotSubscribed` revert
+- During the current testnet beta, the frontend publicly displays signals through the backend API for demo purposes
+
+## Signal Data Flow
+
+```
+Market Data + Kimi AI Analysis
+        ↓
+Encrypted Signal Payload (AES-GCM)
+        ↓
+submitSignalsBatch() → Mantle Sepolia Registry
+        ↓
+Stored in local DB (plaintext for dashboard)
+        ↓
+Frontend calls /api/onchain/signals/recent
+        ↓
+Rendered in React Dashboard
+```
+
+## Current Testnet Beta Note
+
+- Currently deployed on **Mantle Sepolia testnet**
+- Signal data is publicly visible through the backend API during the testing phase
+- The production release will switch to pure on-chain, subscription-only read mode
+
+## Tech Stack
+- **Backend:** FastAPI + Python 3.11
+- **Frontend:** React + Vite + TypeScript + Tailwind CSS
+- **On-chain interaction:** Web3.py / ethers.js + wagmi
+- **Data sources:** Binance API + Mantle RPC
+
+## Quick Start
+
+### Local Development
 ```bash
 cd apps/api
 python -m venv venv
@@ -39,47 +85,56 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### Docker 部署
+### Docker Deployment
 ```bash
 docker-compose up -d
 ```
 
-### 前端访问
-进入 `apps/web-react/` 运行 `npm install && npm run dev` 进行本地开发；生产构建产物位于 `apps/web-react/dist/`，可直接用 nginx 等静态服务器托管。
+### Frontend Access
+Enter `apps/web-react/` and run `npm install && npm run dev` for local development. Production build artifacts are located in `apps/web-react/dist/` and can be served with any static server such as nginx.
 
-## API 端点
+## API Endpoints
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/health` | GET | 健康检查 |
-| `/api/sentiment/analyze` | POST | 分析市场情绪 |
-| `/api/sentiment/latest` | GET | 获取缓存的情绪数据 |
-| `/api/swap/quote` | POST | 获取 Swap 报价 |
-| `/api/mantle/block` | GET | 最新区块信息 |
-| `/api/mantle/gas` | GET | Gas 价格 |
-| `/api/mantle/network` | GET | 网络统计 |
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/api/sentiment/analyze` | POST | Analyze market sentiment |
+| `/api/sentiment/latest` | GET | Get cached sentiment data |
+| `/api/swap/quote` | POST | Get swap quote |
+| `/api/mantle/block` | GET | Latest block information |
+| `/api/mantle/gas` | GET | Gas price |
+| `/api/mantle/network` | GET | Network statistics |
+| `/api/onchain/signals/recent` | GET | Recent on-chain trading signals |
 
-## 环境变量
+## Environment Variables
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `PORT` | 8000 | 服务端口 |
-| `MANTLE_RPC_URL` | https://rpc.mantle.xyz | Mantle RPC |
-| `CACHE_TTL` | 300 | 缓存时间(秒) |
-| `RATE_LIMIT_REQUESTS` | 100 | 限流请求数 |
-| `RATE_LIMIT_WINDOW` | 60 | 限流窗口(秒) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | 8000 | Service port |
+| `MANTLE_RPC_URL` | https://rpc.mantle.xyz | Mantle RPC endpoint |
+| `CACHE_TTL` | 300 | Cache TTL in seconds |
+| `RATE_LIMIT_REQUESTS` | 100 | Rate limit request count |
+| `RATE_LIMIT_WINDOW` | 60 | Rate limit window in seconds |
+| `REGISTRY_ADDRESS` | - | Mantle Sepolia signal registry contract address |
+| `REGISTRY_PRIVATE_KEY` | - | Private key for submitting signals (keep secret) |
+| `SIGNAL_ENCRYPTION_KEY` | - | AES key for encrypting signal payloads |
+| `SUBSCRIPTION_PRICE` | - | Subscription price in MNT |
+| `SUBSCRIPTION_DURATION` | - | Subscription duration in seconds |
 
-## 生产部署检查清单
+Use placeholders for sensitive values; never commit real private keys or API keys.
 
-- [x] 错误处理和日志记录
-- [x] 速率限制
-- [x] 缓存机制
-- [x] CORS 配置
-- [x] 健康检查端点
-- [x] Docker 支持
-- [x] 多 RPC 故障转移
-- [x] API 响应标准化
-- [x] 输入验证
-- [ ] HTTPS 配置
-- [ ] 监控告警
-- [ ] 数据库持久化
+## Production Deployment Checklist
+
+- [x] Error handling and logging
+- [x] Rate limiting
+- [x] Caching mechanism
+- [x] CORS configuration
+- [x] Health check endpoint
+- [x] Docker support
+- [x] Multi-RPC failover
+- [x] Standardized API responses
+- [x] Input validation
+- [ ] HTTPS configuration
+- [ ] Monitoring and alerting
+- [ ] Database persistence
+- [ ] On-chain subscription-only signal read mode

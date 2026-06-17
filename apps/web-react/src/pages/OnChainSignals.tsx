@@ -1,21 +1,16 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAccount } from 'wagmi';
-import { useReadContract } from 'wagmi';
 import {
   Radio,
   Lock,
   Unlock,
-  Eye,
-  EyeOff,
   Link,
   Calendar,
   CheckCircle2,
   XCircle,
   AlertCircle,
   ChevronDown,
-  Hash,
-  User,
   Clock,
   Shield,
   TrendingUp,
@@ -23,11 +18,11 @@ import {
   Activity,
   BarChart3,
   Waves,
+  Filter,
 } from 'lucide-react';
 import { useRegistry } from '../hooks/useRegistry';
-import { useSignalDecrypt } from '../hooks/useSignalDecrypt';
-import { shortenAddress } from '../hooks/useWallet';
-import registryAbi from '../abi/MantleDeFAIRegistry.json';
+import { getRecentOnChainSignals } from '../services/api';
+import type { OnChainSignal } from '../types';
 
 /* ───────────────────────────────
    Helpers
@@ -36,26 +31,6 @@ function ShimmerBox({ className = '' }: { className?: string }) {
   return <div className={`shimmer rounded-lg ${className}`} />;
 }
 
-function hexToUtf8(hex: string): string {
-  if (!hex || hex === '0x') return '';
-  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
-  try {
-    const bytes = new Uint8Array(clean.length / 2);
-    for (let i = 0; i < clean.length; i += 2) {
-      bytes[i / 2] = parseInt(clean.substring(i, i + 2), 16);
-    }
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return '';
-  }
-}
-
-const SYMBOLS = ['BTC', 'ETH', 'MNT', 'SOL', 'ARB'];
-const TIMEFRAMES = ['1h', '4h', '1d', '1w'];
-
-/* ───────────────────────────────
-   StatusBadge
-   ─────────────────────────────── */
 function StatusBadge({ active, label }: { active: boolean; label: string }) {
   return (
     <span
@@ -71,15 +46,309 @@ function StatusBadge({ active, label }: { active: boolean; label: string }) {
   );
 }
 
+function DirectionBadge({ direction }: { direction?: string }) {
+  const d = (direction || '').toLowerCase();
+  const isLong = d === 'long' || d.includes('bull');
+  const isShort = d === 'short' || d.includes('bear');
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+        isLong
+          ? 'bg-emerald-500/10 text-emerald-400'
+          : isShort
+            ? 'bg-red-500/10 text-red-400'
+            : 'bg-amber-500/10 text-amber-400'
+      }`}
+    >
+      {isLong ? <TrendingUp className="w-3 h-3" /> : isShort ? <TrendingDown className="w-3 h-3" /> : null}
+      {direction || '—'}
+    </span>
+  );
+}
+
+function ConfidenceBadge({ confidence }: { confidence?: string }) {
+  const c = (confidence || '').toLowerCase();
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+        c === 'high'
+          ? 'bg-emerald-500/10 text-emerald-400'
+          : c === 'medium'
+            ? 'bg-amber-500/10 text-amber-400'
+            : 'bg-gray-500/10 text-gray-400'
+      }`}
+    >
+      {confidence || '—'}
+    </span>
+  );
+}
+
+function useSignalData(signal: OnChainSignal) {
+  const raw = signal.data as unknown;
+  if (raw && typeof raw === 'object') return raw as OnChainSignal['data'];
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw) as OnChainSignal['data'];
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function SignalCard({ signal }: { signal: OnChainSignal }) {
+  const { t } = useTranslation();
+  const data = useSignalData(signal);
+  const decision = data?.decision;
+  const ew = data?.elliott_wave;
+  const bt = data?.backtest;
+  const sentiment = data?.sentiment;
+  const submittedAt = signal.created_at
+    ? new Date(signal.created_at).toLocaleString()
+    : signal.timestamp
+      ? new Date(signal.timestamp * 1000).toLocaleString()
+      : '—';
+
+  return (
+    <div className="bg-[#0a0e17] border border-white/10 rounded-lg p-4 space-y-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <span className="text-lg font-semibold text-white">{signal.symbol || decision?.symbol || '—'}</span>
+          <span className="px-2 py-0.5 rounded-md bg-white/5 text-gray-300 text-xs font-medium border border-white/10">
+            {signal.timeframe || decision?.timeframe || '—'}
+          </span>
+          <DirectionBadge direction={decision?.direction} />
+          <ConfidenceBadge confidence={decision?.confidence} />
+        </div>
+        <a
+          href={`https://sepolia.mantlescan.xyz/tx/${signal.tx_hash}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-1.5 text-xs text-[#7ED7C4] hover:text-[#4A9B8C] transition"
+        >
+          <Link className="w-3.5 h-3.5" />
+          {signal.tx_hash ? `${signal.tx_hash.slice(0, 10)}...${signal.tx_hash.slice(-8)}` : '—'}
+        </a>
+      </div>
+
+      {/* Decision reason */}
+      {decision?.reason && (
+        <div className="text-sm">
+          <span className="text-gray-500 text-xs block mb-1">{t('onchainSignals.reason', 'Reason')}</span>
+          <p className="text-gray-200 leading-relaxed">{decision.reason}</p>
+        </div>
+      )}
+
+      {/* Elliott Wave */}
+      {ew ? (
+        <div className="border-t border-white/5 pt-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Waves className="w-4 h-4 text-[#7ED7C4]" />
+            <h4 className="text-sm font-medium text-white">{t('onchainSignals.elliottWave', 'Elliott Wave')}</h4>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+            {ew.wave_pattern && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.wavePattern', 'Wave Pattern')}</span>
+                <span className="text-gray-200 font-medium">{ew.wave_pattern}</span>
+              </div>
+            )}
+            {ew.current_wave && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.currentWave', 'Current Wave')}</span>
+                <span className="text-gray-200 font-medium">{ew.current_wave}</span>
+              </div>
+            )}
+            {ew.direction && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.waveDirection', 'Direction')}</span>
+                <span className="text-gray-200 font-medium">{ew.direction}</span>
+              </div>
+            )}
+          </div>
+          {ew.projections && ew.projections.length > 0 && (
+            <div className="mt-3">
+              <span className="text-gray-500 text-xs block mb-2">{t('onchainSignals.projections', 'Projections')}</span>
+              <div className="space-y-2">
+                {ew.projections.map((proj, idx) => (
+                  <div key={idx} className="flex flex-wrap items-center gap-3 bg-white/5 rounded px-3 py-2 text-xs">
+                    {proj.scenario && (
+                      <span
+                        className={`px-2 py-0.5 rounded-full font-medium ${
+                          (proj.scenario || '').toLowerCase().includes('bull')
+                            ? 'bg-emerald-500/10 text-emerald-400'
+                            : (proj.scenario || '').toLowerCase().includes('bear')
+                              ? 'bg-red-500/10 text-red-400'
+                              : 'bg-gray-500/10 text-gray-400'
+                        }`}
+                      >
+                        {proj.scenario}
+                      </span>
+                    )}
+                    {proj.target_price !== undefined && (
+                      <span className="text-gray-300">
+                        Target: <span className="text-gray-200 font-medium">{proj.target_price}</span>
+                      </span>
+                    )}
+                    {proj.stop_loss !== undefined && (
+                      <span className="text-gray-300">
+                        Stop: <span className="text-gray-200 font-medium">{proj.stop_loss}</span>
+                      </span>
+                    )}
+                    {proj.confidence !== undefined && (
+                      <span className="text-gray-300">
+                        Conf: <span className="text-gray-200 font-medium">{proj.confidence}</span>
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="border-t border-white/5 pt-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Waves className="w-4 h-4 text-[#7ED7C4]" />
+            <h4 className="text-sm font-medium text-white">{t('onchainSignals.elliottWave', 'Elliott Wave')}</h4>
+          </div>
+          <p className="text-sm text-gray-500">
+            {t('onchainSignals.noElliottWave', 'No Elliott Wave analysis available for this signal.')}
+          </p>
+        </div>
+      )}
+
+      {/* Backtest */}
+      {bt && (
+        <div className="border-t border-white/5 pt-3">
+          <div className="flex items-center gap-2 mb-2">
+            <BarChart3 className="w-4 h-4 text-[#7ED7C4]" />
+            <h4 className="text-sm font-medium text-white">{t('onchainSignals.backtest', 'Backtest')}</h4>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            {bt.win_rate !== undefined && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.winRate', 'Win Rate')}</span>
+                <span
+                  className={`font-medium ${
+                    bt.win_rate > 60 ? 'text-emerald-400' : bt.win_rate >= 40 ? 'text-amber-400' : 'text-red-400'
+                  }`}
+                >
+                  {bt.win_rate}%
+                </span>
+              </div>
+            )}
+            {bt.avg_pnl !== undefined && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.avgPnl', 'Avg PnL')}</span>
+                <span className="text-gray-200 font-medium">{bt.avg_pnl}</span>
+              </div>
+            )}
+            {bt.profit_factor !== undefined && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.profitFactor', 'Profit Factor')}</span>
+                <span className="text-gray-200 font-medium">{bt.profit_factor}</span>
+              </div>
+            )}
+            {bt.total_signals !== undefined && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.totalSignals', 'Total Signals')}</span>
+                <span className="text-gray-200 font-medium">{bt.total_signals}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Sentiment */}
+      {sentiment && (
+        <div className="border-t border-white/5 pt-3">
+          <div className="flex items-center gap-2 mb-2">
+            <Activity className="w-4 h-4 text-[#7ED7C4]" />
+            <h4 className="text-sm font-medium text-white">{t('onchainSignals.sentiment', 'Sentiment')}</h4>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            {sentiment.sentiment_index !== undefined && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.sentimentIndex', 'Sentiment Index')}</span>
+                <div className="mt-1">
+                  <span className="text-gray-200 font-medium">{sentiment.sentiment_index}</span>
+                  <div className="mt-1 h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-[#7ED7C4] rounded-full"
+                      style={{ width: `${Math.min(100, Math.max(0, sentiment.sentiment_index))}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+            {sentiment.market_bias && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.marketBias', 'Market Bias')}</span>
+                <span
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+                    (sentiment.market_bias || '').toLowerCase().includes('bull')
+                      ? 'bg-emerald-500/10 text-emerald-400'
+                      : (sentiment.market_bias || '').toLowerCase().includes('bear')
+                        ? 'bg-red-500/10 text-red-400'
+                        : 'bg-gray-500/10 text-gray-400'
+                  }`}
+                >
+                  {sentiment.market_bias}
+                </span>
+              </div>
+            )}
+            {sentiment.bullish_count !== undefined && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.bullishCount', 'Bullish')}</span>
+                <span className="text-gray-200 font-medium">{sentiment.bullish_count}</span>
+              </div>
+            )}
+            {sentiment.bearish_count !== undefined && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.bearishCount', 'Bearish')}</span>
+                <span className="text-gray-200 font-medium">{sentiment.bearish_count}</span>
+              </div>
+            )}
+            {sentiment.neutral_count !== undefined && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.neutralCount', 'Neutral')}</span>
+                <span className="text-gray-200 font-medium">{sentiment.neutral_count}</span>
+              </div>
+            )}
+            {sentiment.total_analyzed !== undefined && (
+              <div>
+                <span className="text-gray-500 text-xs block">{t('onchainSignals.totalAnalyzed', 'Total Analyzed')}</span>
+                <span className="text-gray-200 font-medium">{sentiment.total_analyzed}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Footer */}
+      <div className="border-t border-white/5 pt-3 flex items-center gap-2 text-xs text-gray-500">
+        <Clock className="w-3.5 h-3.5" />
+        <span>
+          {t('onchainSignals.submittedAt', 'Submitted At')}: {submittedAt}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+const SYMBOLS = ['BTC', 'ETH', 'MNT', 'SOL', 'ARB'];
+const TIMEFRAMES = ['1h', '4h', '1d', '1w'];
+
 /* ───────────────────────────────
    Main Component
    ─────────────────────────────── */
 export default function OnChainSignals() {
   const { t } = useTranslation();
-  const { address, isConnected } = useAccount();
+  const { isConnected } = useAccount();
   const {
     registryAddress,
-    isSubscribed,
     isSubscribedLoading,
     subscription,
     subscriptionLoading,
@@ -89,44 +358,43 @@ export default function OnChainSignals() {
     subscribeError,
   } = useRegistry();
 
-  const {
-    decryptKey,
-    fetchingKey,
-    fetchError,
-    fetchDecryptKey,
-    decryptSignal,
-  } = useSignalDecrypt();
+  const [signals, setSignals] = useState<OnChainSignal[]>([]);
+  const [signalsLoading, setSignalsLoading] = useState(false);
+  const [signalsError, setSignalsError] = useState<string | null>(null);
+  const [symbolFilter, setSymbolFilter] = useState('All');
+  const [timeframeFilter, setTimeframeFilter] = useState('All');
 
-  const [selectedSymbol, setSelectedSymbol] = useState('BTC');
-  const [selectedTimeframe, setSelectedTimeframe] = useState('1d');
-  const [showDecrypted, setShowDecrypted] = useState(false);
-  const [decryptedResult, setDecryptedResult] = useState<ReturnType<typeof decryptSignal> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadSignals() {
+      setSignalsLoading(true);
+      setSignalsError(null);
+      try {
+        const data = await getRecentOnChainSignals(50);
+        if (!cancelled) setSignals(data);
+      } catch (e) {
+        if (!cancelled) {
+          setSignalsError(
+            e instanceof Error ? e.message : t('onchainSignals.loadError', 'Failed to load on-chain signals')
+          );
+        }
+      } finally {
+        if (!cancelled) setSignalsLoading(false);
+      }
+    }
+    loadSignals();
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
 
-  const contractEnabled = !!registryAddress && !!address;
-
-  // Signal count (public read)
-  const signalCount = useReadContract({
-    address: registryAddress || undefined,
-    abi: registryAbi,
-    functionName: 'getSignalCount',
-    args: [selectedSymbol, selectedTimeframe],
-    query: { enabled: !!registryAddress },
-  });
-
-  // Latest signal (only if subscribed)
-  const latestSignal = useReadContract({
-    address: registryAddress || undefined,
-    abi: registryAbi,
-    functionName: 'getLatestSignal',
-    args: [selectedSymbol, selectedTimeframe],
-    query: { enabled: contractEnabled && isSubscribed === true },
-  });
-
-  const signalData = latestSignal.data as
-    | { encryptedData: string; dataHash: string; timestamp: bigint; submitter: string }
-    | undefined;
-
-  const countValue = signalCount.data as bigint | undefined;
+  const filteredSignals = useMemo(() => {
+    return signals.filter((s) => {
+      if (symbolFilter !== 'All' && s.symbol !== symbolFilter) return false;
+      if (timeframeFilter !== 'All' && s.timeframe !== timeframeFilter) return false;
+      return true;
+    });
+  }, [signals, symbolFilter, timeframeFilter]);
 
   const expiryDate = useMemo(() => {
     if (!subscription || !subscription[0]) return null;
@@ -136,22 +404,6 @@ export default function OnChainSignals() {
   }, [subscription]);
 
   const isSubscriptionActive = subscription ? subscription[2] : false;
-
-  const handleDecrypt = useCallback(async () => {
-    if (!signalData || !address) return;
-
-    let key = decryptKey;
-    if (!key) {
-      key = await fetchDecryptKey(address);
-    }
-    if (!key) return;
-
-    const encryptedStr = hexToUtf8(signalData.encryptedData);
-    const result = decryptSignal(encryptedStr, key);
-    setDecryptedResult(result);
-    setShowDecrypted(true);
-  }, [signalData, address, decryptKey, fetchDecryptKey, decryptSignal]);
-
   const loadingSubscription = isSubscribedLoading || subscriptionLoading;
 
   return (
@@ -171,6 +423,22 @@ export default function OnChainSignals() {
             {t('onchainSignals.comingSoon')}
           </span>
         )}
+      </div>
+
+      {/* Testnet Beta Notice */}
+      <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 p-4 flex items-start gap-3">
+        <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+        <div>
+          <h3 className="text-sm font-semibold text-amber-300">
+            {t('onchainSignals.testnetBetaTitle', 'Testnet Beta')}
+          </h3>
+          <p className="text-sm text-amber-200/80 mt-1">
+            {t(
+              'onchainSignals.testnetBetaDescription',
+              'Signals are publicly visible during testing. Subscription is optional in this beta phase.'
+            )}
+          </p>
+        </div>
       </div>
 
       {/* Subscription Panel */}
@@ -241,334 +509,71 @@ export default function OnChainSignals() {
 
       {/* Signal Browser */}
       <div className="card p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Link className="w-4 h-4 text-[#7ED7C4]" />
-          <h3 className="font-semibold text-white">{t('onchainSignals.latestSignal')}</h3>
-        </div>
-
-        <div className="flex flex-wrap gap-4 mb-4">
-          {/* Symbol Select */}
-          <div className="relative">
-            <label className="block text-xs text-gray-500 mb-1.5">{t('onchainSignals.selectSymbol')}</label>
-            <div className="relative">
-              <select
-                value={selectedSymbol}
-                onChange={(e) => setSelectedSymbol(e.target.value)}
-                className="appearance-none bg-[#0a0e17] border border-white/10 rounded-lg px-4 py-2 pr-10 text-sm text-gray-200 focus:outline-none focus:border-[#4A9B8C] w-32"
-              >
-                {SYMBOLS.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
-            </div>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-4">
+          <div className="flex items-center gap-2">
+            <Link className="w-4 h-4 text-[#7ED7C4]" />
+            <h3 className="font-semibold text-white">{t('onchainSignals.recentSignals', 'Recent On-Chain Signals')}</h3>
           </div>
-
-          {/* Timeframe Select */}
-          <div className="relative">
-            <label className="block text-xs text-gray-500 mb-1.5">{t('onchainSignals.selectTimeframe')}</label>
+          <div className="flex flex-wrap items-center gap-3">
             <div className="relative">
-              <select
-                value={selectedTimeframe}
-                onChange={(e) => setSelectedTimeframe(e.target.value)}
-                className="appearance-none bg-[#0a0e17] border border-white/10 rounded-lg px-4 py-2 pr-10 text-sm text-gray-200 focus:outline-none focus:border-[#4A9B8C] w-32"
-              >
-                {TIMEFRAMES.map((tf) => (
-                  <option key={tf} value={tf}>
-                    {tf}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+              <div className="relative">
+                <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
+                <select
+                  value={symbolFilter}
+                  onChange={(e) => setSymbolFilter(e.target.value)}
+                  className="appearance-none bg-[#0a0e17] border border-white/10 rounded-lg pl-9 pr-10 py-2 text-sm text-gray-200 focus:outline-none focus:border-[#4A9B8C] w-36"
+                >
+                  <option value="All">{t('onchainSignals.allSymbols', 'All Symbols')}</option>
+                  {SYMBOLS.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+              </div>
             </div>
-          </div>
-
-          {/* Signal Count */}
-          <div>
-            <label className="block text-xs text-gray-500 mb-1.5">{t('onchainSignals.signalCount')}</label>
-            <div className="text-sm text-gray-200 font-medium py-2">
-              {signalCount.isLoading ? (
-                <ShimmerBox className="h-5 w-16" />
-              ) : countValue !== undefined ? (
-                <span className="bg-[#2D6B5E]/20 text-[#7ED7C4] px-3 py-1.5 rounded-lg text-sm font-semibold">
-                  {countValue.toString()}
-                </span>
-              ) : (
-                '--'
-              )}
+            <div className="relative">
+              <div className="relative">
+                <Filter className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-500" />
+                <select
+                  value={timeframeFilter}
+                  onChange={(e) => setTimeframeFilter(e.target.value)}
+                  className="appearance-none bg-[#0a0e17] border border-white/10 rounded-lg pl-9 pr-10 py-2 text-sm text-gray-200 focus:outline-none focus:border-[#4A9B8C] w-40"
+                >
+                  <option value="All">{t('onchainSignals.allTimeframes', 'All Timeframes')}</option>
+                  {TIMEFRAMES.map((tf) => (
+                    <option key={tf} value={tf}>
+                      {tf}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Signal display area */}
-        {!isConnected ? (
-          <div className="flex items-center justify-center gap-3 py-8 text-gray-400 border border-dashed border-white/10 rounded-lg">
-            <Lock className="w-5 h-5" />
-            <span>{t('wallet.connectToViewFull')}</span>
-          </div>
-        ) : !isSubscriptionActive ? (
-          <div className="flex items-center justify-center gap-3 py-8 text-amber-400 border border-dashed border-amber-500/20 rounded-lg bg-amber-500/5">
-            <AlertCircle className="w-5 h-5" />
-            <span>{t('onchainSignals.subscribePrompt')}</span>
-          </div>
-        ) : latestSignal.isLoading ? (
+        {signalsLoading ? (
           <div className="space-y-3 py-4">
-            <ShimmerBox className="h-6" />
-            <ShimmerBox className="h-6" />
-            <ShimmerBox className="h-6" />
+            <ShimmerBox className="h-32" />
+            <ShimmerBox className="h-32" />
+            <ShimmerBox className="h-32" />
           </div>
-        ) : !signalData || !countValue || countValue === 0n ? (
+        ) : signalsError ? (
+          <div className="flex items-center justify-center gap-3 py-8 text-red-400 border border-dashed border-red-500/20 rounded-lg bg-red-500/5">
+            <AlertCircle className="w-5 h-5" />
+            <span>{signalsError}</span>
+          </div>
+        ) : filteredSignals.length === 0 ? (
           <div className="flex items-center justify-center py-8 text-gray-500 border border-dashed border-white/10 rounded-lg">
             <span>{t('onchainSignals.noSignals')}</span>
           </div>
         ) : (
           <div className="space-y-4">
-            {/* Signal metadata */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-              <div className="flex items-center gap-2">
-                <Hash className="w-4 h-4 text-gray-500" />
-                <span className="text-gray-500">{t('onchainSignals.integrityHash')}:</span>
-                <span className="text-gray-200 font-mono truncate">{signalData.dataHash}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <User className="w-4 h-4 text-gray-500" />
-                <span className="text-gray-500">{t('onchainSignals.submitter')}:</span>
-                <span className="text-gray-200 font-mono">{shortenAddress(signalData.submitter)}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Clock className="w-4 h-4 text-gray-500" />
-                <span className="text-gray-500">{t('onchainSignals.submittedAt')}:</span>
-                <span className="text-gray-200">
-                  {new Date(Number(signalData.timestamp) * 1000).toLocaleString()}
-                </span>
-              </div>
-            </div>
-
-            {/* Decrypt action */}
-            {!showDecrypted ? (
-              <div className="flex flex-wrap items-center gap-3 pt-2">
-                <button
-                  onClick={handleDecrypt}
-                  disabled={fetchingKey || !signalData.encryptedData}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white mantle-gradient hover:opacity-90 transition shadow-lg shadow-[#2D6B5E]/20 disabled:opacity-50"
-                >
-                  <Eye className="w-4 h-4" />
-                  {fetchingKey ? t('common.loading') : t('onchainSignals.decrypt')}
-                </button>
-                {fetchError && (
-                  <span className="text-sm text-red-400 flex items-center gap-1">
-                    <AlertCircle className="w-4 h-4" />
-                    {fetchError}
-                  </span>
-                )}
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setShowDecrypted(false)}
-                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-white/5 border border-white/10 hover:bg-white/10 transition"
-                  >
-                    <EyeOff className="w-4 h-4" />
-                    {t('onchainSignals.hide')}
-                  </button>
-                </div>
-
-                {decryptedResult && (
-                  <div className="space-y-4">
-                    {/* Decision Card */}
-                    <div className="bg-[#0a0e17] border border-white/10 rounded-lg p-4">
-                      <div className="flex items-center gap-2 mb-3">
-                        <TrendingUp className="w-4 h-4 text-[#7ED7C4]" />
-                        <h4 className="text-sm font-medium text-white">{t('onchainSignals.decision') || 'Decision'}</h4>
-                      </div>
-                      <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
-                        <div>
-                          <span className="text-gray-500 text-xs block">{t('onchainSignals.symbol') || 'Symbol'}</span>
-                          <span className="text-gray-200 font-medium">{decryptedResult.decision.symbol || 'N/A'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500 text-xs block">{t('onchainSignals.timeframe') || 'Timeframe'}</span>
-                          <span className="text-gray-200 font-medium">{decryptedResult.decision.timeframe || 'N/A'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500 text-xs block">{t('onchainSignals.direction') || 'Direction'}</span>
-                          <span
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                              decryptedResult.decision.direction.toLowerCase() === 'long' || decryptedResult.decision.direction.toLowerCase().includes('bull')
-                                ? 'bg-emerald-500/10 text-emerald-400'
-                                : decryptedResult.decision.direction.toLowerCase() === 'short' || decryptedResult.decision.direction.toLowerCase().includes('bear')
-                                  ? 'bg-red-500/10 text-red-400'
-                                  : 'bg-amber-500/10 text-amber-400'
-                            }`}
-                          >
-                            {decryptedResult.decision.direction.toLowerCase() === 'long' ? (
-                              <TrendingUp className="w-3 h-3" />
-                            ) : decryptedResult.decision.direction.toLowerCase() === 'short' ? (
-                              <TrendingDown className="w-3 h-3" />
-                            ) : null}
-                            {decryptedResult.decision.direction || 'N/A'}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500 text-xs block">{t('onchainSignals.confidence') || 'Confidence'}</span>
-                          <span className="text-gray-200 font-medium">{decryptedResult.decision.confidence || 'N/A'}</span>
-                        </div>
-                        <div className="col-span-2 md:col-span-2">
-                          <span className="text-gray-500 text-xs block">{t('onchainSignals.reason') || 'Reason'}</span>
-                          <span className="text-gray-200 font-medium">{decryptedResult.decision.reason || 'N/A'}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Elliott Wave Card */}
-                    {decryptedResult.elliott_wave && (
-                      <div className="bg-[#0a0e17] border border-white/10 rounded-lg p-4">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Waves className="w-4 h-4 text-[#7ED7C4]" />
-                          <h4 className="text-sm font-medium text-white">{t('onchainSignals.elliottWave') || 'Elliott Wave'}</h4>
-                        </div>
-                        <div className="grid grid-cols-2 gap-3 text-sm mb-3">
-                          {decryptedResult.elliott_wave.wave_pattern && (
-                            <div>
-                              <span className="text-gray-500 text-xs block">{t('onchainSignals.wavePattern') || 'Wave Pattern'}</span>
-                              <span className="text-gray-200 font-medium">{decryptedResult.elliott_wave.wave_pattern}</span>
-                            </div>
-                          )}
-                          <div>
-                            <span className="text-gray-500 text-xs block">{t('onchainSignals.currentWave') || 'Current Wave'}</span>
-                            <span className="text-gray-200 font-medium">{decryptedResult.elliott_wave.current_wave || 'N/A'}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 text-xs block">{t('onchainSignals.waveDirection') || 'Direction'}</span>
-                            <span className="text-gray-200 font-medium">{decryptedResult.elliott_wave.direction || 'N/A'}</span>
-                          </div>
-                        </div>
-                        {decryptedResult.elliott_wave.projections && decryptedResult.elliott_wave.projections.length > 0 && (
-                          <div>
-                            <span className="text-gray-500 text-xs block mb-2">{t('onchainSignals.projections') || 'Projections'}</span>
-                            <div className="space-y-2">
-                              {decryptedResult.elliott_wave.projections.map((proj, idx) => (
-                                <div key={idx} className="flex flex-wrap items-center gap-3 bg-white/5 rounded px-3 py-2 text-xs">
-                                  <span
-                                    className={`px-2 py-0.5 rounded-full font-medium ${
-                                      (proj.scenario || '').toLowerCase().includes('bull')
-                                        ? 'bg-emerald-500/10 text-emerald-400'
-                                        : (proj.scenario || '').toLowerCase().includes('bear')
-                                          ? 'bg-red-500/10 text-red-400'
-                                          : 'bg-gray-500/10 text-gray-400'
-                                    }`}
-                                  >
-                                    {proj.scenario || 'N/A'}
-                                  </span>
-                                  <span className="text-gray-300">
-                                    Target: <span className="text-gray-200 font-medium">{proj.target_price}</span>
-                                  </span>
-                                  <span className="text-gray-300">
-                                    Stop: <span className="text-gray-200 font-medium">{proj.stop_loss}</span>
-                                  </span>
-                                  <span className="text-gray-300">
-                                    Conf: <span className="text-gray-200 font-medium">{proj.confidence}</span>
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Backtest Card */}
-                    {decryptedResult.backtest && (
-                      <div className="bg-[#0a0e17] border border-white/10 rounded-lg p-4">
-                        <div className="flex items-center gap-2 mb-3">
-                          <BarChart3 className="w-4 h-4 text-[#7ED7C4]" />
-                          <h4 className="text-sm font-medium text-white">{t('onchainSignals.backtest') || 'Backtest'}</h4>
-                        </div>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                          <div>
-                            <span className="text-gray-500 text-xs block">{t('onchainSignals.winRate') || 'Win Rate'}</span>
-                            <span className={`font-medium ${
-                              decryptedResult.backtest.win_rate !== undefined
-                                ? decryptedResult.backtest.win_rate > 60
-                                  ? 'text-emerald-400'
-                                  : decryptedResult.backtest.win_rate >= 40
-                                    ? 'text-amber-400'
-                                    : 'text-red-400'
-                                : 'text-gray-200'
-                            }`}>
-                              {decryptedResult.backtest.win_rate !== undefined ? `${decryptedResult.backtest.win_rate}%` : 'N/A'}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 text-xs block">{t('onchainSignals.avgPnl') || 'Avg PnL'}</span>
-                            <span className="text-gray-200 font-medium">{decryptedResult.backtest.avg_pnl !== undefined ? decryptedResult.backtest.avg_pnl : 'N/A'}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 text-xs block">{t('onchainSignals.profitFactor') || 'Profit Factor'}</span>
-                            <span className="text-gray-200 font-medium">{decryptedResult.backtest.profit_factor !== undefined ? decryptedResult.backtest.profit_factor : 'N/A'}</span>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 text-xs block">{t('onchainSignals.totalSignals') || 'Total Signals'}</span>
-                            <span className="text-gray-200 font-medium">{decryptedResult.backtest.total_signals !== undefined ? decryptedResult.backtest.total_signals : 'N/A'}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Sentiment Card */}
-                    {decryptedResult.sentiment && (
-                      <div className="bg-[#0a0e17] border border-white/10 rounded-lg p-4">
-                        <div className="flex items-center gap-2 mb-3">
-                          <Activity className="w-4 h-4 text-[#7ED7C4]" />
-                          <h4 className="text-sm font-medium text-white">{t('onchainSignals.sentiment') || 'Sentiment'}</h4>
-                        </div>
-                        <div className="grid grid-cols-2 gap-3 text-sm">
-                          <div>
-                            <span className="text-gray-500 text-xs block">{t('onchainSignals.sentimentIndex') || 'Sentiment Index'}</span>
-                            <div className="mt-1">
-                              <span className="text-gray-200 font-medium">{decryptedResult.sentiment.sentiment_index !== undefined ? decryptedResult.sentiment.sentiment_index : 'N/A'}</span>
-                              {decryptedResult.sentiment.sentiment_index !== undefined && (
-                                <div className="mt-1 h-1.5 w-full bg-white/10 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-[#7ED7C4] rounded-full"
-                                    style={{ width: `${Math.min(100, Math.max(0, decryptedResult.sentiment.sentiment_index))}%` }}
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          <div>
-                            <span className="text-gray-500 text-xs block">{t('onchainSignals.marketBias') || 'Market Bias'}</span>
-                            <span
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                                (decryptedResult.sentiment.market_bias || '').toLowerCase().includes('bull')
-                                  ? 'bg-emerald-500/10 text-emerald-400'
-                                  : (decryptedResult.sentiment.market_bias || '').toLowerCase().includes('bear')
-                                    ? 'bg-red-500/10 text-red-400'
-                                    : 'bg-gray-500/10 text-gray-400'
-                              }`}
-                            >
-                              {decryptedResult.sentiment.market_bias || 'N/A'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Raw Data */}
-                    <div className="bg-[#0a0e17] border border-white/10 rounded-lg p-4">
-                      <span className="text-gray-500 text-xs">{t('onchainSignals.rawData')}</span>
-                      <pre className="mt-1 text-xs text-gray-300 font-mono whitespace-pre-wrap break-all">
-                        {decryptedResult.raw}
-                      </pre>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
+            {filteredSignals.map((signal) => (
+              <SignalCard key={signal.id} signal={signal} />
+            ))}
           </div>
         )}
       </div>

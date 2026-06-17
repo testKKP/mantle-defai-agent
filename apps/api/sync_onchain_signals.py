@@ -13,7 +13,7 @@ from web3 import Web3
 from db import db_save_onchain_signal, db_manager
 
 RPC_URL = "https://rpc.sepolia.mantle.xyz"
-CONTRACT_ADDRESS = "0x684802d365d1bbc0b74f7b57f823acdf965d1ba3"
+CONTRACT_ADDRESS = os.getenv("REGISTRY_ADDRESS", "0xf13CF1217A687e1B4e464BC72AEb40567A7Beb7d")
 
 # Load ABI from web-react
 ABI_PATH = os.path.join(

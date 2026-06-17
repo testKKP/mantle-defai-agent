@@ -666,3 +666,51 @@ export interface ElliottWaveResult {
   is_cached?: boolean;
   computed_at?: string;
 }
+
+export interface OnChainSignal {
+  id: number;
+  tx_hash: string;
+  block_number: number;
+  symbol: string;
+  timeframe: string;
+  data: {
+    version?: string;
+    timestamp?: string;
+    agent_id?: string;
+    decision: {
+      symbol: string;
+      timeframe: string;
+      direction: string;
+      confidence: string;
+      reason: string;
+    };
+    elliott_wave?: {
+      wave_pattern?: string;
+      current_wave?: string;
+      direction?: string;
+      projections?: Array<{
+        scenario?: string;
+        target_price?: number;
+        confidence?: number;
+        stop_loss?: number;
+      }>;
+    };
+    backtest?: {
+      win_rate?: number;
+      avg_pnl?: number;
+      profit_factor?: number;
+      total_signals?: number;
+    };
+    sentiment?: {
+      sentiment_index?: number;
+      market_bias?: string;
+      bullish_count?: number;
+      bearish_count?: number;
+      neutral_count?: number;
+      total_analyzed?: number;
+    };
+  };
+  data_hash: string;
+  timestamp: number;
+  created_at: string;
+}

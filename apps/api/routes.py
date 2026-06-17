@@ -3,6 +3,7 @@ All API endpoints registered via FastAPI APIRouter.
 """
 
 import asyncio
+import json
 import os
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
@@ -1242,17 +1243,44 @@ async def get_onchain_all(request: Request, force_refresh: bool = False):
         logger.error(f"Failed to get all data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_router.get("/api/onchain/signals/recent", tags=["OnChain"], summary="Get Recent On-Chain Signals", description="Get recent signal submissions to the on-chain registry from the database.")
+@api_router.get("/api/onchain/signals/recent", tags=["OnChain"], summary="Get Recent On-Chain Signals", description="Get recent signal submissions to the on-chain registry from the database. During the testnet beta, signals are publicly visible.")
 @rate_limit()
-async def get_recent_onchain_signals(request: Request, limit: int = 100):
-    """Get recent on-chain signal submissions from database."""
+async def get_recent_onchain_signals(request: Request, limit: int = 100, wallet_address: Optional[str] = None):
+    """Get recent on-chain signal submissions from database.
+
+    Testnet beta: this endpoint is publicly accessible. The optional
+    wallet_address parameter is accepted for analytics/forward-compat but
+    does not gate access. If provided, the response includes the wallet's
+    subscription status so the UI can still show subscription state.
+    """
     try:
+        subscription_active = None
+        if wallet_address:
+            try:
+                subscription_active = registry.is_subscribed(wallet_address)
+            except Exception as e:
+                logger.warning(f"[OnChainSignals] Failed to check subscription for {wallet_address}: {e}")
+                subscription_active = False
+
         signals = await db_get_recent_onchain_signals(limit=min(max(limit, 1), 500))
-        return {
+        result = []
+        for s in signals:
+            item = dict(s)
+            if isinstance(item.get("data"), str):
+                try:
+                    item["data"] = json.loads(item["data"])
+                except json.JSONDecodeError:
+                    pass
+            result.append(sanitize_for_json(item))
+        response = {
             "success": True,
-            "count": len(signals),
-            "data": [sanitize_for_json(s) for s in signals],
+            "count": len(result),
+            "data": result,
         }
+        if wallet_address is not None:
+            response["subscription_active"] = bool(subscription_active)
+            response["testnet_beta_public"] = True
+        return response
     except Exception as e:
         logger.error(f"Failed to get recent on-chain signals: {e}")
         raise HTTPException(status_code=500, detail=str(e))

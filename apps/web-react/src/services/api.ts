@@ -1,5 +1,5 @@
 import axios, { type AxiosInstance } from 'axios';
-import type { SentimentData, OnChainOverview, BlockData, GasData, NetworkData, ProtocolData, SwapQuote, AppSettings, TrendsData, TVLHistory, WizardSessionData, ChainInfo, TokenInfo, RouteOption, AnalysisProgress, WalletCheckResult, TrendTransaction, HourlyAnalysis, HalfDaySummary, BigSummary, TrendAggregates, TrendTarget, ChainDistributionItem, LargeTransaction, MonitorSummaryItem, ElliottWaveResult } from '../types';
+import type { SentimentData, OnChainOverview, BlockData, GasData, NetworkData, ProtocolData, SwapQuote, AppSettings, TrendsData, TVLHistory, WizardSessionData, ChainInfo, TokenInfo, RouteOption, AnalysisProgress, WalletCheckResult, TrendTransaction, HourlyAnalysis, HalfDaySummary, BigSummary, TrendAggregates, TrendTarget, ChainDistributionItem, LargeTransaction, MonitorSummaryItem, ElliottWaveResult, OnChainSignal } from '../types';
 
 const DEFAULT_SETTINGS: AppSettings = {
   apiBase: import.meta.env.VITE_API_BASE || '',
@@ -417,6 +417,16 @@ export async function getMonitorSummary(hours?: number): Promise<{ success: bool
   return res.data;
 }
 
+// ============ On-Chain Signals API ============
+
+export async function getRecentOnChainSignals(limit?: number): Promise<OnChainSignal[]> {
+  const res = await apiClient.get('/api/onchain/signals/recent', {
+    params: { limit: limit ?? 50 },
+  });
+  if (res.data?.success) return res.data.data || [];
+  throw new Error(res.data?.message || 'Failed to load on-chain signals');
+}
+
 // ============ Elliott Wave API ============
 
 export async function getElliottWave(symbol: string, timeframe: string = '1d'): Promise<ElliottWaveResult | null> {
@@ -426,4 +436,23 @@ export async function getElliottWave(symbol: string, timeframe: string = '1d'): 
   });
   if (res.data?.success) return res.data.data;
   return null;
+}
+
+export interface ElliottWaveListItem {
+  symbol: string;
+  timeframe: string;
+  chart_paths: string[];
+  computed_at: string;
+  wave_pattern?: string;
+  direction?: string;
+  current_wave?: string;
+}
+
+export async function getElliottWaveList(timeframe: string = '1d'): Promise<ElliottWaveListItem[]> {
+  const res = await apiClient.get('/api/sentiment/elliott-wave/list', {
+    params: { timeframe },
+    timeout: 10000,
+  });
+  if (res.data?.success) return res.data.data || [];
+  throw new Error(res.data?.message || 'Failed to load Elliott Wave list');
 }

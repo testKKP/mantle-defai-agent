@@ -7,10 +7,10 @@ import {
   LineChart, Skull, Wallet, RefreshCw
 } from 'lucide-react';
 // Recharts available if needed: import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Cell } from 'recharts';
-import { getLatestSentiment, analyzeSentiment, getBacktestResult, getElliottWave } from '../services/api';
+import { getLatestSentiment, analyzeSentiment, getBacktestResult, getElliottWaveList, getSettings, type ElliottWaveListItem } from '../services/api';
 import { useApp } from '../context/AppContext';
 import { useWallet } from '../hooks/useWallet';
-import type { SentimentData as BaseSentimentData, TokenData, BacktestResult, BacktestSignal, ElliottWaveResult } from '../types';
+import type { SentimentData as BaseSentimentData, TokenData, BacktestResult, BacktestSignal } from '../types';
 import { translatePattern, translateConfidenceLabel, translateWatch, translateRiskWarning, translateReason } from '../utils/translateBackend';
 
 /* ───────────────────────────────
@@ -667,10 +667,12 @@ export default function Sentiment() {
   }, [connected, address]);
 
   /* ── Elliott Wave state ── */
-  const [ewData, setEwData] = useState<ElliottWaveResult | null>(null);
-  const [ewLoading, setEwLoading] = useState(false);
-  const [ewSymbol, setEwSymbol] = useState('BTC');
+  const [ewSymbol, setEwSymbol] = useState('');
   const [ewTimeframe, setEwTimeframe] = useState('1d');
+  const [ewList, setEwList] = useState<ElliottWaveListItem[]>([]);
+  const [ewListLoading, setEwListLoading] = useState(false);
+  const [ewListError, setEwListError] = useState<string | null>(null);
+  const [ewSelected, setEwSelected] = useState<ElliottWaveListItem | null>(null);
 
   const getBacktestDisplayInfo = (key: string, bt: any) => {
     const [sym, tf] = key.split('_');
@@ -695,26 +697,42 @@ export default function Sentiment() {
   const getImageUrl = (path: string | undefined): string => {
     if (!path) return '';
     if (path.startsWith('http')) return path;
-    const baseUrl = import.meta.env.VITE_API_BASE || '';
-    return `${baseUrl}${path}`;
+    const baseUrl = getSettings().apiBase || '';
+    if (baseUrl) return `${baseUrl}${path}`;
+    return `${window.location.origin}${path}`;
   };
 
-  // 自动加载艾略特波浪缓存
+  // 拉取当前 timeframe 下可用的艾略特波浪 symbol 列表
   useEffect(() => {
-    const loadCache = async () => {
-      setEwLoading(true);
+    const loadList = async () => {
+      setEwListLoading(true);
+      setEwListError(null);
       try {
-        const result = await getElliottWave(ewSymbol, ewTimeframe);
-        setEwData(result);
+        const list = await getElliottWaveList(ewTimeframe);
+        setEwList(list);
       } catch (e) {
-        console.error('Failed to load Elliott Wave cache:', e);
-        setEwData(null);
+        console.error('Failed to load Elliott Wave list:', e);
+        setEwListError('Failed to load list');
+        setEwList([]);
       } finally {
-        setEwLoading(false);
+        setEwListLoading(false);
       }
     };
-    loadCache();
-  }, [ewSymbol, ewTimeframe]);
+    loadList();
+  }, [ewTimeframe]);
+
+  // list 返回后，同步当前选中的 item（默认选中第一个有缓存的 symbol）
+  useEffect(() => {
+    if (ewList.length === 0) {
+      setEwSelected(null);
+      return;
+    }
+    const item = ewList.find(i => i.symbol === ewSymbol) || ewList[0];
+    if (item.symbol !== ewSymbol) {
+      setEwSymbol(item.symbol);
+    }
+    setEwSelected(item);
+  }, [ewList, ewSymbol]);
 
   /* ── Backtest state ── */
   const [activeTab, setActiveTab] = useState<'sentiment' | 'backtest'>('sentiment');
@@ -1107,14 +1125,12 @@ export default function Sentiment() {
           <select
             value={ewSymbol}
             onChange={(e) => setEwSymbol(e.target.value)}
-            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white"
+            disabled={ewListLoading || ewList.length === 0}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-white disabled:opacity-50"
           >
-            <option value="BTC">BTC</option>
-            <option value="ETH">ETH</option>
-            <option value="SOL">SOL</option>
-            <option value="BNB">BNB</option>
-            <option value="XRP">XRP</option>
-            <option value="DOGE">DOGE</option>
+            {ewList.map(item => (
+              <option key={item.symbol} value={item.symbol}>{item.symbol}</option>
+            ))}
           </select>
           <select
             value={ewTimeframe}
@@ -1127,273 +1143,77 @@ export default function Sentiment() {
             <option value="1w">周线</option>
           </select>
           {/* 缓存状态 */}
-          {ewData?.computed_at && (
+          {ewSelected?.computed_at && (
             <span className="ml-auto text-xs text-gray-500">
-              上次计算: {formatTimeAgo(ewData.computed_at)}
-              {ewData.is_cached && <span className="ml-1 px-1.5 py-0.5 bg-gray-700/50 rounded text-[10px]">缓存</span>}
+              上次计算: {formatTimeAgo(ewSelected.computed_at)}
+              <span className="ml-1 px-1.5 py-0.5 bg-gray-700/50 rounded text-[10px]">缓存</span>
             </span>
           )}
         </div>
 
         {/* 结果展示 */}
-        {ewLoading ? (
+        {ewListLoading ? (
           <div className="space-y-3">
             <ShimmerBox className="h-48" />
-            <ShimmerBox className="h-32" />
+            <ShimmerBox className="h-16" />
           </div>
-        ) : ewData ? (
+        ) : ewListError ? (
+          <div className="text-sm text-red-400 text-center py-8">{ewListError}</div>
+        ) : ewList.length === 0 ? (
+          <div className="text-sm text-gray-500 text-center py-8">
+            No Elliott Wave analysis available for this timeframe
+          </div>
+        ) : ewSelected ? (
           <div className="space-y-4">
-            {/* 缓存状态条 */}
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400">
-                  基于 {ewData.klines_count} 根K线计算
-                </span>
-                {ewData.is_cached && (
-                  <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-400 text-[10px] rounded border border-emerald-500/20">
-                    缓存数据
-                  </span>
-                )}
+            {ewSelected.chart_paths?.[0] && (
+              <div className="rounded-lg overflow-hidden border border-gray-800">
+                <img
+                  src={getImageUrl(ewSelected.chart_paths[0])}
+                  alt={`Elliott Wave ${ewSelected.wave_pattern || ewSelected.symbol}`}
+                  className="w-full"
+                  style={{ aspectRatio: '16/9', objectFit: 'cover' }}
+                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                />
               </div>
-              {ewData.computed_at && (
-                <span className="text-xs text-gray-500">
-                  {new Date(ewData.computed_at).toLocaleString()}
-                </span>
-              )}
-            </div>
-            {ewData.candidates.length === 0 ? (
-              <div className="text-sm text-gray-500 text-center py-8">
-                {ewData.message || '未在当前数据中发现艾略特波浪结构'}
-              </div>
-            ) : (
-              ewData.candidates.slice(0, 1).map((candidate, idx) => (
-                <div key={idx} className="space-y-3">
-                  {/* 统一艾略特波浪图表（主图+信息面板） */}
-                  {candidate.chart_path && (
-                    <div className="rounded-lg overflow-hidden border border-gray-800">
-                      <img
-                        src={getImageUrl(candidate.chart_path)}
-                        alt={`Elliott Wave ${candidate.wave_pattern}`}
-                        className="w-full"
-                        style={{ aspectRatio: '16/9', objectFit: 'cover' }}
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                      />
-                    </div>
-                  )}
-
-                  {/* 波浪信息 */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <div className="bg-gray-800/50 rounded-lg p-3">
-                      <div className="text-xs text-gray-500">浪型</div>
-                      <div className="text-sm font-semibold text-white">{candidate.wave_pattern}</div>
-                      {candidate.kimi_analysis?.confirmed_wave && (
-                        <div className="text-[10px] text-[#7ED7C4] mt-0.5 truncate" title={candidate.kimi_analysis.confirmed_wave}>
-                          Kimi: {candidate.kimi_analysis.confirmed_wave}
-                        </div>
-                      )}
-                    </div>
-                    <div className="bg-gray-800/50 rounded-lg p-3">
-                      <div className="text-xs text-gray-500">方向</div>
-                      <div className={`text-sm font-semibold ${candidate.direction === 'up' ? 'text-emerald-400' : 'text-red-400'}`}>
-                        {candidate.direction === 'up' ? '上涨' : '下跌'}
-                      </div>
-                    </div>
-                    <div className="bg-gray-800/50 rounded-lg p-3">
-                      <div className="text-xs text-gray-500">当前浪</div>
-                      <div className="text-sm font-semibold text-white">
-                        {typeof candidate.current_wave === 'string'
-                          ? candidate.current_wave.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
-                          : `Wave ${candidate.current_wave}`}
-                      </div>
-                    </div>
-                    <div className="bg-gray-800/50 rounded-lg p-3">
-                      <div className="text-xs text-gray-500">置信度</div>
-                      <div className="text-sm font-semibold text-[#7ED7C4]">{(candidate.score * 100).toFixed(0)}%</div>
-                      {candidate.kimi_analysis && candidate.kimi_analysis.overall_confidence > 0 && (
-                        <div className="text-[10px] text-gray-400 mt-0.5">
-                          Kimi: {(candidate.kimi_analysis.overall_confidence * 100).toFixed(0)}%
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Kimi AI 分析 */}
-                  {candidate.kimi_analysis && (
-                    <div className="bg-gradient-to-r from-[#2D6B5E]/10 to-transparent rounded-lg p-3 border border-[#2D6B5E]/20 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <Zap className="w-3.5 h-3.5 text-[#7ED7C4]" />
-                        <span className="text-xs font-medium text-[#7ED7C4]">Kimi AI 分析</span>
-                        {candidate.kimi_annotated && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#7ED7C4]/10 text-[#7ED7C4] border border-[#7ED7C4]/20">AI标注</span>
-                        )}
-                      </div>
-
-                      {candidate.kimi_analysis.corrections && candidate.kimi_analysis.corrections.length > 0 && (
-                        <div className="space-y-1">
-                          <div className="text-xs text-gray-500">修正建议:</div>
-                          <ul className="space-y-1">
-                            {candidate.kimi_analysis.corrections.map((corr, ci) => (
-                              <li key={ci} className="text-xs text-amber-300/80 flex items-start gap-1.5">
-                                <span className="mt-1 w-1 h-1 rounded-full bg-amber-400 flex-shrink-0" />
-                                {corr}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
-                      {candidate.kimi_analysis.raw_analysis && (
-                        <details className="group">
-                          <summary className="flex items-center gap-1 cursor-pointer list-none text-xs text-gray-400 hover:text-gray-300 w-fit">
-                            <ChevronDown className="w-3 h-3 transition-transform group-open:rotate-180" />
-                            查看完整分析
-                          </summary>
-                          <div className="mt-2 text-xs text-gray-400 whitespace-pre-wrap max-h-48 overflow-y-auto bg-gray-900/50 rounded p-2">
-                            {candidate.kimi_analysis.raw_analysis}
-                          </div>
-                        </details>
-                      )}
-                    </div>
-                  )}
-
-                  {/* 当前浪概率 — 优先使用 Kimi 结果 */}
-                  {(() => {
-                    const kimiProbs = candidate.kimi_analysis?.current_wave_probabilities;
-                    const algoProbs = candidate.current_wave_probabilities;
-                    const probs = (kimiProbs && Object.keys(kimiProbs).length > 0) ? kimiProbs : algoProbs;
-                    const probSource = (kimiProbs && Object.keys(kimiProbs).length > 0) ? 'AI研判' : '算法推算';
-
-                    return probs && Object.keys(probs).length > 0 ? (
-                      <div className="bg-gray-800/30 rounded-lg p-3">
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-xs text-gray-500">当前浪概率</span>
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-gray-700/50 text-gray-400">
-                            {probSource}
-                          </span>
-                        </div>
-                        <div className="space-y-1.5">
-                          {Object.entries(probs)
-                            .sort(([,a], [,b]) => (b as number) - (a as number))
-                            .slice(0, 3)
-                            .map(([wave, prob]) => (
-                              <div key={wave} className="flex items-center gap-2">
-                                <div className="flex-1 h-2 bg-gray-700 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-[#7ED7C4] rounded-full transition-all"
-                                    style={{ width: `${(prob as number) * 100}%` }}
-                                  />
-                                </div>
-                                <span className="text-xs text-gray-400 w-20">{wave.replace(/_/g, ' ')}</span>
-                                <span className="text-xs font-medium text-white w-10 text-right">{((prob as number) * 100).toFixed(0)}%</span>
-                              </div>
-                            ))}
-                        </div>
-                        {candidate.current_wave_status === 'forming' && (
-                          <div className="text-xs text-amber-400 mt-2">⚡ 正在形成中</div>
-                        )}
-                      </div>
-                    ) : null;
-                  })()}
-
-                  {/* 斐波那契比例 */}
-                  {candidate.fib_ratios && Object.keys(candidate.fib_ratios).length > 0 && (
-                    <div className="bg-gray-800/30 rounded-lg p-3">
-                      <div className="text-xs text-gray-500 mb-2">斐波那契比例</div>
-                      <div className="flex flex-wrap gap-2">
-                        {Object.entries(candidate.fib_ratios).map(([key, val]) => (
-                          <span key={key} className="px-2 py-0.5 bg-gray-700/50 rounded text-xs text-gray-300">
-                            {key}: {(val as number).toFixed(3)}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 走势预测卡片 */}
-                  {candidate.projections && candidate.projections.length > 0 && (
-                    <div className="bg-gray-800/30 rounded-lg p-3 space-y-2">
-                      <div className="text-xs text-gray-500">走势预测</div>
-
-                      {/* 概率堆叠进度条 */}
-                      {(() => {
-                        const bullishConf = candidate.projections!.find(p => p.scenario === 'bullish')?.confidence ?? 0;
-                        const bearishConf = candidate.projections!.find(p => p.scenario === 'bearish')?.confidence ?? 0;
-                        const neutralConf = candidate.projections!.find(p => p.scenario === 'neutral')?.confidence ?? 0;
-                        const total = bullishConf + bearishConf + neutralConf;
-                        const bullishPct = total > 0 ? (bullishConf / total) * 100 : 0;
-                        const bearishPct = total > 0 ? (bearishConf / total) * 100 : 0;
-                        const neutralPct = total > 0 ? (neutralConf / total) * 100 : 0;
-                        return (
-                          <>
-                            <div className="flex h-2 rounded-full overflow-hidden mt-2">
-                              {bullishPct > 0 && (
-                                <div
-                                  className="bg-emerald-500 h-full"
-                                  style={{ width: `${bullishPct}%` }}
-                                  title={`Bullish: ${bullishPct.toFixed(1)}%`}
-                                />
-                              )}
-                              {neutralPct > 0 && (
-                                <div
-                                  className="bg-gray-500 h-full"
-                                  style={{ width: `${neutralPct}%` }}
-                                  title={`Neutral: ${neutralPct.toFixed(1)}%`}
-                                />
-                              )}
-                              {bearishPct > 0 && (
-                                <div
-                                  className="bg-red-500 h-full"
-                                  style={{ width: `${bearishPct}%` }}
-                                  title={`Bearish: ${bearishPct.toFixed(1)}%`}
-                                />
-                              )}
-                            </div>
-                            <div className="flex justify-between text-[10px] text-gray-500 mt-1">
-                              <span className={bullishConf > 0 ? 'text-emerald-400' : ''}>
-                                {bullishConf > 0 ? `Bullish ${bullishPct.toFixed(1)}%` : ''}
-                              </span>
-                              <span className={neutralConf > 0 ? 'text-gray-400' : ''}>
-                                {neutralConf > 0 ? `Neutral ${neutralPct.toFixed(1)}%` : ''}
-                              </span>
-                              <span className={bearishConf > 0 ? 'text-red-400' : ''}>
-                                {bearishConf > 0 ? `Bearish ${bearishPct.toFixed(1)}%` : ''}
-                              </span>
-                            </div>
-                          </>
-                        );
-                      })()}
-
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mt-2">
-                        {candidate.projections.map((proj, pidx) => (
-                          <div
-                            key={pidx}
-                            className={`p-2 rounded-lg border ${
-                              proj.scenario === 'bullish'
-                                ? 'border-emerald-500/30 bg-emerald-500/5'
-                                : proj.scenario === 'bearish'
-                                ? 'border-red-500/30 bg-red-500/5'
-                                : 'border-gray-700 bg-gray-800/50'
-                            }`}
-                          >
-                            <div className="text-xs font-medium text-gray-400">
-                              {proj.scenario === 'bullish' ? '牛市' : proj.scenario === 'bearish' ? '熊市' : '中性'}
-                            </div>
-                            <div className="text-sm text-white mt-0.5">{proj.description}</div>
-                            <div className="text-sm font-semibold text-[#7ED7C4]">
-                              ${proj.target_price?.toLocaleString?.() || proj.target_price}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              ))
             )}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-gray-800/50 rounded-lg p-3">
+                <div className="text-xs text-gray-500">浪型</div>
+                <div className="text-sm font-semibold text-white">{ewSelected.wave_pattern || '--'}</div>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-3">
+                <div className="text-xs text-gray-500">方向</div>
+                <div className={`text-sm font-semibold ${
+                  ewSelected.direction?.toLowerCase() === 'up' ? 'text-emerald-400' :
+                  ewSelected.direction?.toLowerCase() === 'down' ? 'text-red-400' : 'text-white'
+                }`}>
+                  {ewSelected.direction ? (
+                    ewSelected.direction.toLowerCase() === 'up' ? '上涨' :
+                    ewSelected.direction.toLowerCase() === 'down' ? '下跌' : ewSelected.direction
+                  ) : '--'}
+                </div>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-3">
+                <div className="text-xs text-gray-500">当前浪</div>
+                <div className="text-sm font-semibold text-white">
+                  {typeof ewSelected.current_wave === 'string'
+                    ? ewSelected.current_wave.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+                    : ewSelected.current_wave !== undefined
+                    ? `Wave ${ewSelected.current_wave}`
+                    : '--'}
+                </div>
+              </div>
+              <div className="bg-gray-800/50 rounded-lg p-3">
+                <div className="text-xs text-gray-500">计算时间</div>
+                <div className="text-sm font-semibold text-white">
+                  {ewSelected.computed_at ? new Date(ewSelected.computed_at).toLocaleString() : '--'}
+                </div>
+              </div>
+            </div>
           </div>
         ) : (
           <div className="text-sm text-gray-500 text-center py-8">
-            暂无缓存数据
+            No Elliott Wave analysis available for this timeframe
           </div>
         )}
       </div>

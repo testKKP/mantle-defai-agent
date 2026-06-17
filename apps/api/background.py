@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from onchain_collector import OnChainDataCollector, DataRefreshScheduler
 from defillama_client import DeFiLlamaClient
 from data_aggregator import DataAggregator, AggregatorScheduler, create_aggregator
-from db import db_set, db_get_elliott_wave
+from db import db_set, db_get_elliott_wave, db_save_onchain_signal
 from backtest import _enrich_with_backtest
 
 # Internal imports
@@ -24,7 +24,7 @@ from clients import analyzer, onchain_collector, llama_client, MantleProvider
 import state
 from state import data_aggregator, aggregator_scheduler
 from crypto_utils import encrypt_signal, hash_signal, pack_encrypted_signal
-from contract_client import registry
+from contract_client import registry, w3
 
 # ============ Unified Background Refresh ============
 
@@ -288,6 +288,7 @@ async def _submit_signals_to_registry(sentiment: dict):
                     "timeframe": timeframe,
                     "encrypted_data": encrypted_data,
                     "data_hash": data_hash,
+                    "plaintext": plaintext,
                 })
 
     if not signals_to_submit:
@@ -299,6 +300,42 @@ async def _submit_signals_to_registry(sentiment: dict):
     if tx_hash:
         logger.info(f"[RegistrySubmission] Submitted {len(signals_to_submit)} signals, tx: {tx_hash}")
         logger.info(f"[RegistrySubmission] Payload summary: {len(signals_to_submit)} signals, version 2.0")
+
+        # Wait for receipt and persist decrypted plaintext to local DB
+        try:
+            receipt = await asyncio.to_thread(w3.eth.wait_for_transaction_receipt, tx_hash, timeout=60)
+            block_number = receipt.blockNumber
+
+            # Retry fetching the block a few times; some RPCs need a moment to index it
+            timestamp = None
+            for attempt in range(5):
+                try:
+                    block = await asyncio.to_thread(w3.eth.get_block, block_number)
+                    timestamp = block.timestamp
+                    break
+                except Exception as block_err:
+                    if attempt < 4:
+                        logger.debug(f"[RegistrySubmission] Block {block_number} not ready, retrying... ({block_err})")
+                        await asyncio.sleep(1)
+                    else:
+                        raise
+
+            if timestamp is None:
+                raise RuntimeError(f"Could not fetch block {block_number} after retries")
+
+            for signal in signals_to_submit:
+                await db_save_onchain_signal(
+                    tx_hash=tx_hash,
+                    block_number=block_number,
+                    symbol=signal["symbol"],
+                    timeframe=signal["timeframe"],
+                    data=signal["plaintext"],
+                    data_hash=signal["data_hash"],
+                    timestamp=timestamp,
+                )
+            logger.info(f"[RegistrySubmission] Persisted {len(signals_to_submit)} signals to DB")
+        except Exception as e:
+            logger.warning(f"[RegistrySubmission] Failed to persist signals to DB: {e}")
     else:
         logger.warning("[RegistrySubmission] Batch submission returned no tx hash")
 

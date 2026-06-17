@@ -1,71 +1,36 @@
-# Mantle DeFAI Agent
+# Mantle DeFAI Agent — 生产级应用
 
-> Autonomous AI trading signal agent for the Mantle ecosystem, transforming multi-source market sentiment and AI technical analysis into verifiable, subscribable on-chain signals.
+## 项目定位
+Mantle 生态的自主 AI Agent for DeFi on Mantle，融合市场情绪分析 + 最佳变现路由 + Mantle 链上数据。
 
----
+## 核心功能模块
 
-## Positioning
+### 1. 市场情绪分析引擎 (生产就绪)
+- 数据源：币安 API（交易量前50币种）
+- 指标：5线顺上/顺下检测（MA5 > MA10 > MA20 > MA60 > MA120）
+- 输出：市场情绪评分 (0-100) + 币种列表
+- 缓存：5分钟 TTL，减少 API 调用
 
-**Mantle DeFAI Agent** is a DeFAI (DeFi + AI) agent built for the Mantle ecosystem:
+### 2. Mantle 链上数据 (生产就绪)
+- 实时区块数据查询
+- Gas 价格监控
+- 网络活跃度分析
+- 多 RPC 故障转移
 
-- Aggregates Binance market data and on-chain data to compute real-time market sentiment scores
-- Uses Kimi AI to perform Elliott Wave analysis on raw candlestick charts, identifying support/resistance and directional bias
-- Validates historical signal performance through a backtest engine
-- Batches AES-encrypted signals and submits them to the Mantle Sepolia on-chain registry contract, readable only by subscribers
-- Includes a React frontend dashboard with wallet connection for viewing encrypted signals
+### 3. DEX 报价查询 (基础版)
+- 接入 Merchant Moe LBQuoter 合约
+- 支持 MNT/USDC/USDT 等主流代币
+- 自动降级到模拟数据（RPC 不可用时）
 
----
+## 技术栈
+- 后端：FastAPI + Python 3.11
+- 前端：React + Vite + TypeScript + Tailwind CSS
+- 链上交互：Web3.py / ethers.js + wagmi
+- 数据抓取：币安 API + Mantle RPC
 
-## Core Modules
+## 快速开始
 
-### 1. Market Sentiment Engine
-- Data source: Binance API (top 50 symbols by trading volume)
-- Indicator: 5-line alignment detection (MA5 > MA10 > MA20 > MA60 > MA120)
-- Output: Market sentiment score 0-100 + symbol list
-- Refresh interval: Every 4 hours
-- Cache TTL: 15,000 seconds
-
-### 2. AI Elliott Wave Analysis
-- Kimi dual-mode analysis:
-  - **Vision mode**: Visual analysis using raw candlestick charts for BTC/ETH
-  - **Text-only mode**: Fast text-based analysis for other symbols
-- Automatically identifies key support levels, resistance levels, and directional bias
-- Generates analysis charts every 4 hours for the top 10 daily long-biased symbols
-- Coverage increased from ~13% to ~83%
-
-### 3. Backtest Engine
-- Validates strategy performance through historical signal backtesting
-- `/api/sentiment/latest` returns trimmed backtest results to avoid oversized responses
-
-### 4. Encrypted On-chain Signal Registry (P0-3)
-- Signals are AES-encrypted and batch-submitted to the Mantle Sepolia registry contract
-- Contract address: `0xf13CF1217A687e1B4e464BC72AEb40567A7Beb7d`
-- Only subscribers can read and decrypt the signals
-- Real submission transactions have been verified on-chain
-
-### 5. Frontend Dashboard
-- React 18 + Vite + TypeScript + Tailwind CSS + wagmi
-- Unified view of sentiment analysis, on-chain signals, and Elliott Wave charts
-- Supports wallet connection for viewing encrypted signals
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|------|------|
-| Backend | FastAPI + Python 3.11 + Web3.py |
-| Frontend | React 18 + Vite + TypeScript + Tailwind CSS + wagmi |
-| AI | Kimi CLI (vision / text analysis) |
-| Data | Binance API, Mantle RPC, Moralis (quota currently exhausted) |
-| On-chain | Mantle Sepolia / Mantle Mainnet |
-
----
-
-## Quick Start
-
-### Local Development
-
+### 本地开发
 ```bash
 cd apps/api
 python -m venv venv
@@ -74,76 +39,47 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### Docker Deployment
-
+### Docker 部署
 ```bash
 docker-compose up -d
 ```
 
-### Frontend
+### 前端访问
+进入 `apps/web-react/` 运行 `npm install && npm run dev` 进行本地开发；生产构建产物位于 `apps/web-react/dist/`，可直接用 nginx 等静态服务器托管。
 
-Navigate to `apps/web-react/` and run:
+## API 端点
 
-```bash
-npm install && npm run dev
-```
-
-Production build artifacts are located in `apps/web-react/dist/` and can be served directly by nginx or any static server.
-
----
-
-## API Endpoints
-
-| Endpoint | Method | Description |
+| 端点 | 方法 | 说明 |
 |------|------|------|
-| `/health` | GET | Health check |
-| `/api/sentiment/analyze` | POST | Analyze market sentiment |
-| `/api/sentiment/latest` | GET | Latest sentiment data + backtest summary |
-| `/api/sentiment/refresh` | POST | Refresh sentiment data manually |
-| `/api/sentiment/elliott-wave/list` | GET | Elliott wave analysis list |
-| `/api/sentiment/elliott-wave/refresh` | POST | Refresh Elliott wave analysis manually |
-| `/api/sentiment/backtest` | GET | Backtest results |
-| `/api/onchain/signals` | GET | On-chain signals |
-| `/api/onchain/subscriptions` | GET | Subscription info |
-| `/api/swap/quote` | POST | Swap quote |
-| `/api/mantle/block` | GET | Latest block info |
-| `/api/mantle/gas` | GET | Gas price |
-| `/api/mantle/network` | GET | Network stats |
+| `/health` | GET | 健康检查 |
+| `/api/sentiment/analyze` | POST | 分析市场情绪 |
+| `/api/sentiment/latest` | GET | 获取缓存的情绪数据 |
+| `/api/swap/quote` | POST | 获取 Swap 报价 |
+| `/api/mantle/block` | GET | 最新区块信息 |
+| `/api/mantle/gas` | GET | Gas 价格 |
+| `/api/mantle/network` | GET | 网络统计 |
 
----
+## 环境变量
 
-## Environment Variables
-
-| Variable | Default | Description |
+| 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `PORT` | 8000 | Server port |
+| `PORT` | 8000 | 服务端口 |
 | `MANTLE_RPC_URL` | https://rpc.mantle.xyz | Mantle RPC |
-| `CACHE_TTL` | 300 | Cache TTL in seconds |
-| `RATE_LIMIT_REQUESTS` | 100 | Rate limit request count |
-| `RATE_LIMIT_WINDOW` | 60 | Rate limit window in seconds |
-| `REGISTRY_ADDRESS` | `0xf13CF1217A687e1B4e464BC72AEb40567A7Beb7d` | On-chain signal registry contract address |
-| `REGISTRY_PRIVATE_KEY` | `<YOUR_PRIVATE_KEY>` | Submitter private key (placeholder) |
-| `SIGNAL_ENCRYPTION_KEY` | `<YOUR_AES_KEY>` | Signal AES encryption key (placeholder) |
-| `MORALIS_API_KEY` | `<YOUR_MORALIS_API_KEY>` | Moralis API key (placeholder) |
-| `ALLOWED_ORIGINS` | `*` | Allowed CORS origins |
-| `IP_WHITELIST` | `<COMMA_SEPARATED_IPS>` | IP whitelist (placeholder) |
+| `CACHE_TTL` | 300 | 缓存时间(秒) |
+| `RATE_LIMIT_REQUESTS` | 100 | 限流请求数 |
+| `RATE_LIMIT_WINDOW` | 60 | 限流窗口(秒) |
 
-> ⚠️ Do not commit real private keys, API keys, or IP whitelists to the repository.
+## 生产部署检查清单
 
----
-
-## Production Checklist
-
-- [x] Error handling & logging
-- [x] Rate limiting
-- [x] Caching
-- [x] CORS configuration
-- [x] Health check endpoint
-- [x] Docker support
-- [x] Multi-RPC failover
-- [x] Standardized API responses
-- [x] Input validation
-- [x] Encrypted on-chain signal submission
-- [ ] HTTPS configuration
-- [ ] Monitoring & alerting
-- [ ] Database persistence
+- [x] 错误处理和日志记录
+- [x] 速率限制
+- [x] 缓存机制
+- [x] CORS 配置
+- [x] 健康检查端点
+- [x] Docker 支持
+- [x] 多 RPC 故障转移
+- [x] API 响应标准化
+- [x] 输入验证
+- [ ] HTTPS 配置
+- [ ] 监控告警
+- [ ] 数据库持久化

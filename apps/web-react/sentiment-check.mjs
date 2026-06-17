@@ -4,7 +4,8 @@ import { chromium } from 'playwright';
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
   
-  await page.goto('http://localhost/sentiment', { waitUntil: 'load', timeout: 60000 });
+  const targetUrl = process.env.TARGET_URL || 'http://localhost:5173/sentiment';
+  await page.goto(targetUrl, { waitUntil: 'load', timeout: 60000 });
   
   const result = await page.evaluate(async () => {
     const start = performance.now();
@@ -19,7 +20,7 @@ import { chromium } from 'playwright';
   
   console.log(JSON.stringify(result, null, 2));
   
-  await page.screenshot({ path: 'tests/screenshots/ew-fixed-playwright.png', fullPage: false });
+  await page.screenshot({ path: '/root/.openclaw/workspace/projects/mantle-defai-trader/tests/screenshots/ew-fixed-playwright.png', fullPage: false });
   
   await browser.close();
 })();
